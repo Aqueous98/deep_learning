@@ -13,7 +13,7 @@ def add_noise(data_new, samplerate, data_noise, samplerate_noise):
 
 	
 
-	sf.write('new_file.flac', data_new, samplerate)
+	#sf.write('new_file.flac', data_new, samplerate)
 
 	return(data)
 	
