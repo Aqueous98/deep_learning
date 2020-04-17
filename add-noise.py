@@ -17,3 +17,12 @@ def add_noise(data_new, samplerate, data_noise, samplerate_noise):
 
 	return(data)
 	
+#path = "84-121123-0000.flac"
+#path = "arctic_a0001.wav"
+#path_noise = "rain_noise.flac"
+
+#data, samplerate = sf.read(path) ##Main File
+#data_noise, samplerate_noise = sf.read(path_noise)
+#print(samplerate,samplerate_noise)
+
+#add_noise(data,samplerate, data_noise,samplerate_noise)
