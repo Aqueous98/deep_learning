@@ -7,16 +7,17 @@ import add-noise as an
 import preprocessing as pp
 import random
 import tensorflow as tf
+import scipy.signal as ss
 
 from tensorflow.keras import layers
 
 corpus = pra.datasets.CMUArcticCorpus(download=True, speaker=['bdl', 'slt'])
 
-#the two outermost layers need to be dense with the dimensionality of the input/output
+# dimensionality of input = number of frequency channels (257)
 model = tf.keras.Sequential()
-model.add(layers.Dense(50))
-model.add(layers.LSTM(64))
-model.add(layers.Dense(50))
+model.add(layers.Dense(100, input_shape=(257,)))
+model.add(layers.LSTM(100))
+model.add(layers.Dense(257))
 
 def loss(target, pred):
   return tf.keras.losses.MSE(target, pred)
@@ -30,21 +31,20 @@ for i in len(corpus):
     echosample = ae.add_echoes(sample)
     #add noise here
     #add echoes and noise here
-    targets[i] = pp.process_sentence(sample, 16000)
+    targets[i] = ss.stft(pp.process_sentence(sample, 16000), fs=16000, nfft=512)
     
     #randomise which sample is input
-    input = 0
     rand = random.randint(0, 3)
     if rand==0:
-        samples[i] = sample
+        f, t, samples[i] = ss.stft(sample, fs=16000, nfft=512)
     elif rand==1:
-        samples[i] = echosample
+        f, t, samples[i] = ss.stft(echosample, fs=16000, nfft=512)
     elif rand==2:
         #add just noise
-        samples[i] = sample
+        samples[i] = ss.stft(sample, fs=16000, nfft=512)
     else:
         #add both
-        samples[i] = sample
+        samples[i] = ss.stft(sample, fs=16000, nfft=512)
         
 #train the network
 model.fit(samples, targets, epochs = 50)
@@ -57,8 +57,8 @@ plt.plot(input)
 plt.show()
 
 #run the network on the test sample
-output = model.predict(input)
+output = model.predict(ss.stft(input, fs=16000, nfft=512))
 #plot and play output
-sounddevice.play(output, 16000)
+sounddevice.play(ss.istft(output, fs=16000, nfft=512), 16000)
 plt.plot(output)
 plt.show()
