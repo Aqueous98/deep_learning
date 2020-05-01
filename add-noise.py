@@ -16,6 +16,10 @@ def add_noise(data_new, samplerate, data_noise, samplerate_noise):
 	#sf.write('new_file.flac', data_new, samplerate)
 
 	return(data)
+
+def add_noise_gaussian(sample):
+	noise = np.random.normal(0, 1, sample.size)
+	return sample+noise
 	
 #path = "84-121123-0000.flac"
 #path = "arctic_a0001.wav"
