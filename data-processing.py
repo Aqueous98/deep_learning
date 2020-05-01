@@ -30,6 +30,8 @@ for i in len(corpus):
     sample = corpus[i].data
     echosample = ae.add_echoes(sample)
     #add noise here
+    sample = add_noise(sample, RainNoise.flac)
+    
     #add echoes and noise here
     targets[i] = ss.stft(pp.process_sentence(sample, 16000), fs=16000, nfft=512)
     
