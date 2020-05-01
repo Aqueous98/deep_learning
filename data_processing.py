@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 import pyroomacoustics as pra
 import sounddevice
 import numpy as np
-import add-echoes as ae
-import add-noise as an
+import add_echoes as ae
+import add_noise as an
 import preprocessing as pp
 import random
 import tensorflow as tf
