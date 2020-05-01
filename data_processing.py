@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 import pyroomacoustics as pra
 import sounddevice
 import numpy as np
-import add-echoes as ae
-import add-noise as an
+import add_echoes as ae
+import add_noise as an
 import preprocessing as pp
 import random
 import tensorflow as tf
@@ -11,7 +11,9 @@ import scipy.signal as ss
 
 from tensorflow.keras import layers
 
-corpus = pra.datasets.CMUArcticCorpus(download=True, speaker=['bdl', 'slt'])
+corpus = pp.download_corpus(download_flag=False, speaker=['bdl', 'slt'])
+
+print(len(corpus))
 
 # dimensionality of input = number of frequency channels (257)
 model = tf.keras.Sequential()

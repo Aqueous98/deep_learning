@@ -550,11 +550,9 @@ def obtain_fft_in_db(data, n_fft):
   return data
 
 
-def download_corpus():
+def download_corpus(download_flag = True, speaker=['clb']):
   # Download the corpus, be patient
-  download_flag = True
   corpus = None
-  speaker = ['clb']
   if os.path.exists(ARCTIC_DIR):
     download_flag = False
     corpus = CMUArcticCorpus(
