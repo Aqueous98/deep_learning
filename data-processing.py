@@ -29,24 +29,18 @@ targets = corpus
 for i in len(corpus):
     sample = corpus[i].data
     echosample = ae.add_echoes(sample)
-    #add noise here
-    sample = add_noise(sample, RainNoise.flac)
-    
-    #add echoes and noise here
+    noisesample = add_noise(sample, RainNoise.flac)
+    bothsample = ae.add_echoes(noisesample)
     targets[i] = ss.stft(pp.process_sentence(sample, 16000), fs=16000, nfft=512)
     
     #randomise which sample is input
-    rand = random.randint(0, 3)
+    rand = random.randint(0, 2)
     if rand==0:
-        f, t, samples[i] = ss.stft(sample, fs=16000, nfft=512)
-    elif rand==1:
         f, t, samples[i] = ss.stft(echosample, fs=16000, nfft=512)
-    elif rand==2:
-        #add just noise
-        samples[i] = ss.stft(sample, fs=16000, nfft=512)
+    elif rand==1:
+        f, t, samples[i] = ss.stft(noisesample, fs=16000, nfft=512)
     else:
-        #add both
-        samples[i] = ss.stft(sample, fs=16000, nfft=512)
+        samples[i] = ss.stft(bothsample, fs=16000, nfft=512)
         
 #train the network
 model.fit(samples, targets, epochs = 50)
