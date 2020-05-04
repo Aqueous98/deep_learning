@@ -10,17 +10,15 @@ import tensorflow as tf
 import scipy.signal as ss
 import soundfile as sf
 
-from tensorflow.keras import layers
-
 corpus = pp.download_corpus(download_flag=False, speaker=['bdl', 'slt'])
 
 print(len(corpus))
 
 # dimensionality of input = number of frequency channels (257)
 model = tf.keras.Sequential()
-model.add(layers.Dense(100, input_shape=(257,)))
-model.add(layers.LSTM(100))
-model.add(layers.Dense(257))
+model.add(tf.keras.layers.Dense(100, input_shape=(257,)))
+model.add(tf.keras.layers.LSTM(100))
+model.add(tf.keras.layers.Dense(257))
 
 def loss(target, pred):
   return tf.keras.losses.MSE(target, pred)
