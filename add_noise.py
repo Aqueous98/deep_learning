@@ -14,7 +14,7 @@ def add_noise(data_new,  data_noise):
 
 	#sf.write('new_file.flac', data_new, samplerate)
 
-	return(data)
+	return(data_new)
 
 def add_noise_gaussian(sample):
 	noise = np.random.normal(0, 1, sample.size)
