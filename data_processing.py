@@ -8,6 +8,7 @@ import preprocessing as pp
 import random
 import tensorflow as tf
 import scipy.signal as ss
+import soundfile as sf
 
 from tensorflow.keras import layers
 
@@ -31,7 +32,7 @@ targets = corpus
 for i in len(corpus):
     sample = corpus[i].data
     echosample = ae.add_echoes(sample)
-    noisesample = add_noise(sample, RainNoise.flac)
+    noisesample = an.add_noise(sample, sf.read("RainNoise.flac"))
     bothsample = ae.add_echoes(noisesample)
     targets[i] = ss.stft(pp.process_sentence(sample, 16000), fs=16000, nfft=512)
     
