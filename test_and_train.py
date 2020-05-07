@@ -64,8 +64,8 @@ EPOCHS = 50
 max_val = 1
 
 # Model Parameters
-METRICS = ['mean_absolute_error', 'accuracy']
-LOSS = 'mean_absolute_error'
+METRICS = ['mean_squared_error', 'accuracy']
+LOSS = 'mean_squared_error'
 OPTIMIZER = 'adam'
 
 
