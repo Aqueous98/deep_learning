@@ -56,7 +56,7 @@ def get_audiogram(x, y, order='cubic'):
   return z, (X, Y)
 
 
-def process_audiogram(x_audiogram, y_audiogram, freq):
+def process_audiogram(x_audiogram, y_audiogram, freq, plot=False):
 
   audiogram_eq, (x_audiogram, y_audiogram) = get_audiogram(x_audiogram, y_audiogram, 'linear')
 
@@ -67,7 +67,8 @@ def process_audiogram(x_audiogram, y_audiogram, freq):
   audiogram = np.array([audiogram_eq(x) for x in x_range_audiogram])
   audiogram = (x_range_audiogram, audiogram)
 
-  # plot_audiogram(audiogram)
+  if plot:
+    plot_audiogram(audiogram)
 
   return audiogram
 
@@ -331,7 +332,17 @@ def nlfc(
   return data_stacked
 
 
-def eq(data_db, eq_freqs, audiogram, sr, n_fft, db_ref, data_amp, phase):
+def eq(
+  data_db,
+  eq_freqs,
+  audiogram,
+  sr,
+  n_fft,
+  db_ref,
+  data_amp,
+  phase,
+  plot=False
+):
 
   data_raw = deepcopy(data_amp)
   # mag, phase = librosa.core.magphase(data_raw)
@@ -351,14 +362,15 @@ def eq(data_db, eq_freqs, audiogram, sr, n_fft, db_ref, data_amp, phase):
   # half everything?
   data_halved = data / 2
 
-  plt.figure(get_fig_nums() + 1)
-  plt.title('data halved')
-  specshow(
-    amplitude_to_db(data_halved) if db_ref is None else data_halved,
-    x_axis='time',
-    y_axis='linear'
-  )
-  plt.colorbar()
+  if plot:
+    plt.figure(get_fig_nums() + 1)
+    plt.title('data halved')
+    specshow(
+      amplitude_to_db(data_halved) if db_ref is None else data_halved,
+      x_axis='time',
+      y_axis='linear'
+    )
+    plt.colorbar()
 
   eq_freqs = np.array(eq_freqs)
   sample_rates = np.array([sr for _ in eq_freqs])
@@ -373,12 +385,14 @@ def eq(data_db, eq_freqs, audiogram, sr, n_fft, db_ref, data_amp, phase):
   max_scaling = np.max(audiogram[1])
   scaled_audiogram = audiogram[1] / 120.
   fb = []
-  plt.figure(get_fig_nums() + 1)
-  plt.title('filterbank')
+  if plot:
+    plt.figure(get_fig_nums() + 1)
+    plt.title('filterbank')
   for sos in fb_sos:
     freqs, fb_filter = scipy.signal.sosfreqz(np.array(sos), n_fft//2 + 1, fs=sr)
     fb.append(fb_filter)
-    plt.plot(freqs, np.abs(fb_filter))
+    if plot:
+      plt.plot(freqs, np.abs(fb_filter))
 
   fb = np.array(fb)
   fb_smoothened = np.zeros((fb.shape[1],), dtype=np.float)
@@ -395,28 +409,30 @@ def eq(data_db, eq_freqs, audiogram, sr, n_fft, db_ref, data_amp, phase):
   fb_mag = filtered_data
   fb_mag += data_halved
 
-  plt.figure(get_fig_nums() + 1)
-  plt.title('filtered')
-  specshow(
-    amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag),
-    x_axis='time',
-    y_axis='linear'
-  )
-  plt.colorbar()
+  if plot:
+    plt.figure(get_fig_nums() + 1)
+    plt.title('filtered')
+    specshow(
+      amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag),
+      x_axis='time',
+      y_axis='linear'
+    )
+    plt.colorbar()
 
   db_shift = 65
   max_filtered_dt = np.max(fb_mag)
   # print(max_filtered_dt - db_shift)
   fb_mag -= (max_filtered_dt - db_shift)
 
-  plt.figure(get_fig_nums() + 1)
-  plt.title('final output')
-  specshow(
-    amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag),
-    x_axis='time',
-    y_axis='linear'
-  )
-  plt.colorbar()
+  if plot:
+    plt.figure(get_fig_nums() + 1)
+    plt.title('final output')
+    specshow(
+      amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag),
+      x_axis='time',
+      y_axis='linear'
+    )
+    plt.colorbar()
 
   data_out = db_to_amplitude(fb_mag, ref=1)
   data_out_noisy = data_out
@@ -424,7 +440,7 @@ def eq(data_db, eq_freqs, audiogram, sr, n_fft, db_ref, data_amp, phase):
   return data_out_noisy
 
 
-def process_sentence(data, fs, n_fft=512, center=True):
+def process_sentence(data, fs, n_fft=512, center=True, plot=False):
 
   # Default settings for speech analysis
   # n_fft = 512 to provide 25ms-35ms samples
@@ -441,8 +457,8 @@ def process_sentence(data, fs, n_fft=512, center=True):
 
   # Get the equation and freq, db array from the audiogram provided
   x_audiogram = [125, 250, 500, 1000, 1500, 2000, 4000]
-  y_audiogram = [40, 35, 40, 65, 110, 110, 120]
-  audiogram = process_audiogram(x_audiogram, y_audiogram, freq)
+  y_audiogram = [40, 35, 40, 65, 75, 75, 80]
+  audiogram = process_audiogram(x_audiogram, y_audiogram, freq, plot)
 
   # Preemphasis to increase amplitude of high frequencies
   # data_emph_filt = librosa.effects.preemphasis(data_pad)
@@ -455,6 +471,12 @@ def process_sentence(data, fs, n_fft=512, center=True):
 
   # Consider using frequencies of phonomes.
   eq_freqs = [315, 500, 800, 1250, 2000, 3150, 5000]
+  # mel_freqs = librosa.filters.mel_frequencies(
+  #   n_mels=20,
+  #   fmin=300.,
+  #   fmax=4000.,
+  #   htk=True
+  # )[:-2]
   # mel_fb = librosa.filters.mel(
   #   fs,
   #   n_fft,
@@ -487,7 +509,8 @@ def process_sentence(data, fs, n_fft=512, center=True):
     n_fft,
     db_ref,
     mag,
-    phase
+    phase,
+    plot
   )
   data_proc = data_proc_mag * phase
 
@@ -517,25 +540,17 @@ def process_sentence(data, fs, n_fft=512, center=True):
   denoised_signal = pra.denoise.apply_subspace(
     data_mod,
     frame_len=64,
-    mu=1.5,
+    mu=0.75,
     lookback=10,
     skip=1,
-    thresh=0.85,
+    thresh=0.75,
     data_type='float64'
   )
 
-  # # denoised_sig = pra.denoise.apply_spectral_sub(
-  # #   data_mod,
-  # #   n_fft,
-  # #   db_reduc=10,
-  # #   lookback=5,
-  # #   beta=20,
-  # #   alpha=3
-  # # )
-
-  plt.figure(get_fig_nums() + 1)
-  plt.title('final output time domain')
-  plt.plot(denoised_signal)
+  if plot:
+    plt.figure(get_fig_nums() + 1)
+    plt.title('final output time domain')
+    plt.plot(denoised_signal)
 
   return denoised_signal, audiogram
 
@@ -550,7 +565,7 @@ def obtain_fft_in_db(data, n_fft):
   return data
 
 
-def download_corpus(download_flag = True, speaker=['clb']):
+def download_corpus(download_flag=True, speaker=['clb']):
   # Download the corpus, be patient
   corpus = None
   if os.path.exists(ARCTIC_DIR):
@@ -651,5 +666,5 @@ if __name__ == '__main__':
 
   corpus = download_corpus()
 
-  # test(corpus, play=True)
-  gen_processed_and_save_wav(corpus, False)
+  test(corpus, play=True)
+  # gen_processed_and_save_wav(corpus, False)
