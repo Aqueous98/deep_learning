@@ -42,11 +42,11 @@ model.compile(optimizer='adam', loss=loss)
 samples = []
 targets = []
 
-for i in range(5):
+for i in range(len(corpus)):
   if len(corpus[i].data) > max_val:
     max_val = len(corpus[i].data)
 
-for i in range(10):
+for i in range(len(corpus)):
   data = corpus[i].data.astype(np.float64)
   sample = deepcopy(data)
   fs = corpus[i].fs
