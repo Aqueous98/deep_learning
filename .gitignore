@@ -1,3 +1,6 @@
 .vscode/
-data/
+data/Arctic/
+data/deepspeech/
+data/wav_files/
+*.pyc
 __pycache__/

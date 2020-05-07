@@ -84,6 +84,9 @@ for i in range(len(corpus)):
 samples = np.array(samples)
 targets = np.array(targets)
 
+np.save("samples.npy", samples, allow_pickle=True)
+np.save("targets.npy", targets, allow_pickle=True)
+
 print(samples.shape)
 print(targets.shape)
 #train the network

@@ -67,8 +67,8 @@ def process_audiogram(x_audiogram, y_audiogram, freq, plot=False):
   audiogram = np.array([audiogram_eq(x) for x in x_range_audiogram])
   audiogram = (x_range_audiogram, audiogram)
 
-  if plot:
-    plot_audiogram(audiogram)
+  # if plot:
+  #   plot_audiogram(audiogram)
 
   return audiogram
 
@@ -552,6 +552,9 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
     plt.title('final output time domain')
     plt.plot(denoised_signal)
 
+  # Normalize
+  denoised_signal = librosa.util.normalize(denoised_signal)
+
   return denoised_signal, audiogram
 
 
@@ -644,7 +647,7 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
   # Get the frequency distribution
   freq = fft_frequencies(sr=fs, n_fft=n_fft)
 
-  data_mod, audiogram = process_sentence(data, fs, n_fft=n_fft, center=True)
+  data_mod, audiogram = process_sentence(data, fs, n_fft=n_fft, center=True, plot=play)
 
   # librosa.feature.chroma_cqt(
 

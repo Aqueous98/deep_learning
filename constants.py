@@ -12,6 +12,8 @@ DATA_DIR = os.path.join(ROOT_DIR, 'data')
 
 ARCTIC_DIR = os.path.join(DATA_DIR, 'Arctic')
 WAVE_DIR = os.path.join(DATA_DIR, 'wav_files')
+PP_DATA_DIR = os.path.join(DATA_DIR, 'preprocessed')
+NOISE_DIR = os.path.join(DATA_DIR, 'noise')
 
 
 def create_arctic_directory():
@@ -22,3 +24,8 @@ def create_arctic_directory():
 def create_saved_wav_directory():
   if not os.path.exists(WAVE_DIR):
     os.makedirs(WAVE_DIR)
+
+
+def create_preprocessed_dataset_directory():
+  if not os.path.exists(PP_DATA_DIR):
+    os.makedirs(PP_DATA_DIR)
