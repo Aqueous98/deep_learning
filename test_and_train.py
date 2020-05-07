@@ -1,5 +1,8 @@
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+import time
+import datetime
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,12 +13,14 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Conv2D, MaxPooling2D, Dropout, Flatten
+from tensorflow.keras.layers import Dense, Conv2D, LSTM
 from tensorflow.keras.layers import Activation, ZeroPadding2D
 from tensorflow.keras.models import model_from_json
 from tensorflow.keras.callbacks import Callback, ModelCheckpoint
 
 import random
+
+import timeit
 
 import os, argparse, sys, shutil
 from pathlib import Path
@@ -44,12 +49,14 @@ import librosa.filters
 import librosa.effects
 
 from constants import ROOT_DIR, DATA_DIR, ARCTIC_DIR, create_arctic_directory
-from constants import create_preprocessed_dataset_directory, PP_DATA_DIR
+from constants import create_preprocessed_dataset_directories, PP_DATA_DIR
 from constants import NOISE_DIR
 
 import add_echoes as ae
 import add_noise as an
 import soundfile as sf
+
+import sounddevice
 
 from copy import deepcopy
 
@@ -59,13 +66,16 @@ root_path = 'data/'
 
 # Global vars to change here
 NFFT = 512
+FS = 16000
 BATCH_SIZE = 32
-EPOCHS = 50
+EPOCHS = 1
 max_val = 1
 
+CHUNK = 500
+
 # Model Parameters
-METRICS = ['mean_absolute_error', 'accuracy']
-LOSS = 'mean_absolute_error'
+METRICS = ['mean_squared_error', 'accuracy']
+LOSS = 'mean_squared_error'
 OPTIMIZER = 'adam'
 
 
@@ -73,13 +83,29 @@ def pad(data, length):
   return librosa.util.fix_length(data, length)
 
 
+def normalize_sample(X):
+  """ Normalize the sample """
+
+  X = X / np.linalg.norm(X)
+
+  return X
+
+
 def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   """ Define the model architecture """
-
+  output_shape = input_shape[2]
   model = Sequential()
-  model.summary()
+
+  model.add(LSTM(100, return_sequences=True))
+  model.add(Dense(output_shape))
 
   return model
+
+
+def scale_sample(X):
+  scaler = preprocessing.MinMaxScaler()
+  scaler = scaler.fit(X)
+  return scaler
 
 
 def model_load(model_name='speech2speech'):
@@ -107,11 +133,11 @@ def generate_dataset(truth_type=None):
 
   corpus = download_corpus()
   if not os.path.exists(PP_DATA_DIR):
-    create_preprocessed_dataset_directory()
+    create_preprocessed_dataset_directories()
   else:
-    # corpus_len = len(corpus)
-    corpus_len = 2
+    corpus_len = len(corpus)
     max_val = 0
+    max_stft_len = 0
     # Find maximum length of time series data to pad
     for i in range(corpus_len):
       if len(corpus[i].data) > max_val:
@@ -137,12 +163,16 @@ def generate_dataset(truth_type=None):
     if is_raw or is_both:
       y_raw = []
 
+    memory_counter = 0
+
+    total_time = 0
     # Get each sentence from corpus and add random noise/echos/both to the input
     # and preprocess the output. Also pad the signals to the max_val
     for i in range(corpus_len):
+      start = datetime.datetime.now()
       # Original data in time domain
       data_orig_td = corpus[i].data.astype(np.float64)
-      yi = pad(deepcopy(data_orig_td), max_val)
+      yi = pad(deepcopy(data_orig_td), max_val + NFFT//2)
       # Sampling frequency
       fs = corpus[i].fs
 
@@ -155,9 +185,9 @@ def generate_dataset(truth_type=None):
       )
       bothsample = ae.add_echoes(noisesample)
 
-      echosample = pad(echosample, max_val)
-      noisesample = pad(noisesample, max_val)
-      bothsample = pad(bothsample, max_val)
+      echosample = pad(echosample, max_val + NFFT//2)
+      noisesample = pad(noisesample, max_val + NFFT//2)
+      bothsample = pad(bothsample, max_val + NFFT//2)
 
       # Equalize data for high frequency hearing loss
       data_eq = None
@@ -175,50 +205,264 @@ def generate_dataset(truth_type=None):
 
       #randomise which sample is input
       rand = random.randint(0, 2)
+      random_sample_stft = None
       if rand == 0:
-        echosample_stft = librosa.core.stft(
+        random_sample_stft = librosa.core.stft(
           echosample,
           n_fft=NFFT,
           center=True
         )
-        X.append(np.abs(echosample_stft.T))
       elif rand == 1:
-        noisesample_stft = librosa.core.stft(
+        random_sample_stft = librosa.core.stft(
           noisesample,
           n_fft=NFFT,
           center=True
         )
-        X.append(np.abs(noisesample_stft.T))
       else:
-        bothsample_stft = librosa.core.stft(
+        random_sample_stft = librosa.core.stft(
           bothsample,
           n_fft=NFFT,
           center=True
         )
-        X.append(np.abs(bothsample_stft.T))
 
-    # Convert to np arrays
+      max_stft_len = random_sample_stft.shape[1]
+      X.append(np.abs(random_sample_stft.T))
+
+      # print("Padded {}".format(i))
+      dt = datetime.datetime.now() - start
+      total_time += dt.total_seconds() * 1000
+      avg_time = total_time / (i+1)
+      if (i % CHUNK == CHUNK - 1):
+        print("Average Time taken for {}: {}ms".format(i, avg_time))
+        print("Saving temp npy file to CHUNK {}".format(memory_counter))
+        # Convert to np arrays
+        if is_eq or is_both:
+          y_eq_temp = np.array(y_eq)
+
+        if is_raw or is_both:
+          y_raw_temp = np.array(y_raw)
+
+        X_temp = np.array(X)
+
+        # Save files
+        np.save(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "inputs_{}.npy".format(memory_counter)
+          ),
+          X_temp,
+          allow_pickle=True
+        )
+
+        if is_eq or is_both:
+          np.save(
+            os.path.join(
+              PP_DATA_DIR,
+              "model",
+              "truths_eq_{}.npy".format(memory_counter)
+            ),
+            y_eq_temp,
+            allow_pickle=True
+          )
+        if is_raw or is_both:
+          np.save(
+            os.path.join(
+              PP_DATA_DIR,
+              "model",
+              "truths_raw_{}.npy".format(memory_counter)
+            ),
+            y_raw_temp,
+            allow_pickle=True
+          )
+        # print(
+        #   "Saved blocks {}:{}".format(
+        #     memory_counter * CHUNK,
+        #     (memory_counter+1) * CHUNK
+        #   )
+        # )
+
+        X = []
+        y_eq = None
+        y_raw = None
+
+        if is_eq or is_both:
+          y_eq = []
+        if is_raw or is_both:
+          y_raw = []
+
+        memory_counter += 1
+
+    if corpus_len % CHUNK > 0:
+      # Convert to np arrays
+      if is_eq or is_both:
+        y_eq_temp = np.array(y_eq)
+
+      if is_raw or is_both:
+        y_raw_temp = np.array(y_raw)
+
+      X_temp = np.array(X)
+      end_len = len(X)
+
+      # Save temp files
+      np.save(
+        os.path.join(
+          PP_DATA_DIR,
+          "model",
+          "inputs_{}.npy".format(memory_counter)
+        ),
+        X_temp,
+        allow_pickle=True
+      )
+
+      if is_eq or is_both:
+        np.save(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_eq_{}.npy".format(memory_counter)
+          ),
+          y_eq_temp,
+          allow_pickle=True
+        )
+      if is_raw or is_both:
+        np.save(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_raw_{}.npy".format(memory_counter)
+          ),
+          y_raw_temp,
+          allow_pickle=True
+        )
+      print("Saved blocks {}:{}".format(0, memory_counter*CHUNK + end_len))
+      memory_counter += 1
+
+    X = np.zeros(shape=(corpus_len, max_stft_len, NFFT//2 + 1))
+    y_eq = None
+    y_raw = None
     if is_eq or is_both:
-      y_eq = np.array(y_eq)
-
+      y_eq = np.zeros(shape=(corpus_len, max_stft_len, NFFT//2 + 1))
     if is_raw or is_both:
-      y_raw = np.array(y_raw)
+      y_raw = np.zeros(shape=(corpus_len, max_stft_len, NFFT//2 + 1))
 
-    X = np.array(X)
+    end = 0
+    for file_i in range(memory_counter - 1):
+      start = file_i * CHUNK
+      end = start + CHUNK
+      # print("Loading blocks {}:{}".format(start, end))
+
+      X[start:end] = np.load(
+        os.path.join(PP_DATA_DIR,
+                     "model",
+                     "inputs_{}.npy".format(file_i))
+      )
+      os.remove(
+        os.path.join(PP_DATA_DIR,
+                     "model",
+                     "inputs_{}.npy".format(file_i))
+      )
+      if is_eq or is_both:
+        y_eq[start:end] = np.load(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_eq_{}.npy".format(file_i)
+          )
+        )
+        os.remove(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_eq_{}.npy".format(file_i)
+          )
+        )
+      if is_raw or is_both:
+        y_raw[start:end] = np.load(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_raw_{}.npy".format(file_i)
+          )
+        )
+        os.remove(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_raw_{}.npy".format(file_i)
+          )
+        )
+
+      # print("Loaded blocks {}:{}".format(start, end))
+
+    X[end:] = np.load(
+      os.path.join(
+        PP_DATA_DIR,
+        "model",
+        "inputs_{}.npy".format(memory_counter - 1)
+      )
+    )
+    os.remove(
+      os.path.join(
+        PP_DATA_DIR,
+        "model",
+        "inputs_{}.npy".format(memory_counter - 1)
+      )
+    )
+    if is_eq or is_both:
+      y_eq[end:] = np.load(
+        os.path.join(
+          PP_DATA_DIR,
+          "model",
+          "truths_eq_{}.npy".format(memory_counter - 1)
+        )
+      )
+      os.remove(
+        os.path.join(
+          PP_DATA_DIR,
+          "model",
+          "truths_eq_{}.npy".format(memory_counter - 1)
+        )
+      )
+    if is_raw or is_both:
+      y_raw[end:] = np.load(
+        os.path.join(
+          PP_DATA_DIR,
+          "model",
+          "truths_raw_{}.npy".format(memory_counter - 1)
+        )
+      )
+      os.remove(
+        os.path.join(
+          PP_DATA_DIR,
+          "model",
+          "truths_raw_{}.npy".format(memory_counter - 1)
+        )
+      )
+
+    print("Loaded blocks {}:{}".format(0, X.shape[0]))
 
     # Save files
-    np.save(os.path.join(PP_DATA_DIR, "inputs.npy"), X, allow_pickle=True)
+    np.save(
+      os.path.join(PP_DATA_DIR,
+                   "model",
+                   "inputs.npy"),
+      X,
+      allow_pickle=True
+    )
 
     if is_eq or is_both:
       np.save(
         os.path.join(PP_DATA_DIR,
+                     "model",
                      "truths_eq.npy"),
         y_eq,
         allow_pickle=True
       )
-    if is_eq or is_both:
+    if is_raw or is_both:
       np.save(
         os.path.join(PP_DATA_DIR,
+                     "model",
                      "truths_raw.npy"),
         y_raw,
         allow_pickle=True
@@ -251,11 +495,15 @@ def load_dataset(truth_type='raw'):
   y_train = None
   y_val = None
 
-  if not os.path.isfile(PP_DATA_DIR + 'inputs.npy'):
+  if not os.path.isfile(os.path.join(PP_DATA_DIR, 'model', 'inputs.npy')):
     X, y, _ = generate_dataset(truth_type)
   else:
-    X = np.load(os.path.join(PP_DATA_DIR, 'inputs.npy'))
-    y = np.load(os.path.join(PP_DATA_DIR, 'truths.npy'))
+    X = np.load(os.path.join(PP_DATA_DIR, 'model', 'inputs.npy'))
+    y = np.load(
+      os.path.join(PP_DATA_DIR,
+                   'model',
+                   'truths_{}.npy').format(truth_type)
+    )
 
   # Generate training and testing set
   X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
@@ -280,6 +528,13 @@ def save_model(model, model_name='speech2speech'):
   model.save_weights(root_path + 'models/{}/model.h5'.format(model_name))
 
   return model
+
+
+def play_sound(y, fs=NFFT):
+  sounddevice.play(y, fs)
+  plt.plot(y)
+  plt.show()
+  return
 
 
 def test_and_train(model_name='speech2speech', retrain=True):
@@ -310,26 +565,13 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
     print("x_train shape:", X_train.shape, "y_train shape:", y_train.shape)
 
-    # X_train_norm = normalize_sample(X_train).reshape(
-    #   [-1,
-    #    X_train.shape[1],
-    #    X_train.shape[2],
-    #    1]
-    # )
-    # X_val_norm = normalize_sample(X_val).reshape(
-    #   [-1,
-    #    X_val.shape[1],
-    #    X_val.shape[2],
-    #    1]
-    # )
+    X_train_norm = normalize_sample(X_train)
+    X_val_norm = normalize_sample(X_val)
+    y_train_norm = normalize_sample(y_train)
+    y_val_norm = normalize_sample(y_val)
     model = None
 
-    model = gen_model(
-      (X_train.shape[1],
-       X_train.shape[2],
-       1),
-      y_train.shape[1]
-    )
+    model = gen_model(X_train_norm.shape)
     print('Created Model...')
 
     model.compile(loss=LOSS, optimizer=OPTIMIZER, metrics=METRICS)
@@ -337,7 +579,7 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
     # fit the keras model on the dataset
     cbs = [
-      callbacks.EarlyStopping(
+      tf.keras.callbacks.EarlyStopping(
         monitor='loss',
         min_delta=0.0001,
         patience=100,
@@ -346,40 +588,46 @@ def test_and_train(model_name='speech2speech', retrain=True):
       )
     ]
 
-    # model.fit(
-    #   X_train_norm,
-    #   y_train,
-    #   epochs=EPOCHS,
-    #   batch_size=BATCH_SIZE,
-    #   validation_data=(X_val_norm,
-    #                    y_val),
-    #   verbose=1,
-    #   callbacks=cbs
-    # )
+    model.fit(
+      X_train_norm,
+      y_train_norm,
+      epochs=EPOCHS,
+      batch_size=BATCH_SIZE,
+      validation_data=(X_val_norm,
+                       y_val_norm),
+      verbose=1,
+      callbacks=cbs
+    )
     print('Model Fit...')
 
     model = save_model(model, model_name)
 
-  X = X_test
-  y = y_test
+  min_y, max_y = np.min(y_test), np.max(y_test)
+  X_test_norm = normalize_sample(X_test)
+  y_test_norm = normalize_sample(y_test)
 
-  # X = normalize_sample(X_test).reshape(
-  #   [-1,
-  #    X_test.shape[1],
-  #    X_test.shape[2],
-  #    1]
-  # )
+  X = X_test_norm
+  y = y_test_norm
 
   model = model_load(model_name)
 
   _, mse, accuracy = model.evaluate(X, y, verbose=0)
-  print('Accuracy: %.2f' % (accuracy*100), mse)
+  print('Testing accuracy: {}, Testing MSE: {}'.format(accuracy * 100, mse))
 
-  # y_pred = predict_values(scaler.fit_transform(X), model)
+  # Predict and listen to one:
+  idx = random.randint(0, len(X) - 1)
+  test = X[idx]
+  test = test.reshape(1, test.shape[0], test.shape[1])
+  y_pred = model.predict(test)
+  output_lowdim = (y_pred[0].T) * (max_y-min_y)
+  print(output_lowdim.shape)
+  output_sound = librosa.griffinlim(output_lowdim)
+  play_sound(output_sound, FS)
 
   return
 
 
 if __name__ == '__main__':
-  # test_and_train(model_name='speech2speech', retrain=True)
-  generate_dataset()
+  test_and_train(model_name='speech2speech', retrain=True)
+  # print(timeit.timeit(generate_dataset, number=1))
+  # generate_dataset(truth_type='raw')

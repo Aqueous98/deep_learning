@@ -4,3 +4,4 @@ data/deepspeech/
 data/wav_files/
 *.pyc
 __pycache__/
+data/Arctic.tar.gz

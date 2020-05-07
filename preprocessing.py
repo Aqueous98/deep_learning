@@ -548,6 +548,7 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
     librosa.output.write_wav(
       os.path.join(
         constants.PP_DATA_DIR,
+        "audio",
         'preprocessed_unfiltered_magnitude.wav'
       ),
       data_proc_mag_td,
@@ -560,6 +561,7 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
     librosa.output.write_wav(
       os.path.join(
         constants.PP_DATA_DIR,
+        "audio",
         'preprocessed_unfiltered_magphase.wav'
       ),
       data_proc_magphase_td,
@@ -572,6 +574,7 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
     librosa.output.write_wav(
       os.path.join(
         constants.PP_DATA_DIR,
+        "audio",
         'preprocessed_unfiltered_griffinlim.wav'
       ),
       data_proc_griffinlim_td,
@@ -624,8 +627,11 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
   denoised_signal = librosa.util.normalize(denoised_signal)
   if plot:
     librosa.output.write_wav(
-      os.path.join(constants.PP_DATA_DIR,
-                   'preprocessed_filtered.wav'),
+      os.path.join(
+        constants.PP_DATA_DIR,
+        "audio",
+        'preprocessed_filtered.wav'
+      ),
       denoised_signal,
       fs,
       norm=True
@@ -644,16 +650,23 @@ def obtain_fft_in_db(data, n_fft):
   return data
 
 
-def download_corpus(download_flag=True, speaker=['clb']):
+def download_corpus(download_flag=True, speaker=[]):
   # Download the corpus, be patient
   corpus = None
   if os.path.exists(ARCTIC_DIR):
-    download_flag = False
-    corpus = CMUArcticCorpus(
-      basedir=ARCTIC_DIR,
-      download=download_flag,
-      speaker=speaker
-    )
+    if os.path.isfile(
+      os.path.join(ARCTIC_DIR,
+                   'cmu_us_aew_arctic/wav/arctic_a0001.wav')
+    ):
+      download_flag = False
+    if len(speaker) < 1:
+      corpus = CMUArcticCorpus(basedir=ARCTIC_DIR, download=download_flag)
+    else:
+      corpus = CMUArcticCorpus(
+        basedir=ARCTIC_DIR,
+        download=download_flag,
+        speaker=speaker
+      )
   else:
     create_arctic_directory()
     corpus = CMUArcticCorpus(basedir=ARCTIC_DIR, download=download_flag)
@@ -733,6 +746,7 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
 
   librosa.output.write_wav(
     os.path.join(constants.PP_DATA_DIR,
+                 "audio",
                  'raw.wav'),
     data,
     fs,

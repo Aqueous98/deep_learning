@@ -26,6 +26,8 @@ def create_saved_wav_directory():
     os.makedirs(WAVE_DIR)
 
 
-def create_preprocessed_dataset_directory():
+def create_preprocessed_dataset_directories():
   if not os.path.exists(PP_DATA_DIR):
     os.makedirs(PP_DATA_DIR)
+    os.makedirs(os.path.join(PP_DATA_DIR, "model"))
+    os.makedirs(os.path.join(PP_DATA_DIR, "audio"))
