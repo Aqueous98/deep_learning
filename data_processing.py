@@ -27,7 +27,7 @@ model.compile(optimizer='adam', loss=loss)
 samples = corpus
 targets = corpus
 
-for i in len(corpus):
+for i in range(len(corpus)):
     sample = corpus[i].data
     echosample = ae.add_echoes(sample)
     noisesample = an.add_noise(sample, sf.read("RainNoise.flac"))
