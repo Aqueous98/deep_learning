@@ -159,9 +159,9 @@ def apply_filter(data, filter_vals, scale=None):
 
     h_new = np.multiply(filter_vals, sample)
     # h_new = scipy.signal.convolve(sample, filter_vals, 'same')
-    for i, h in enumerate(h_new):
-      if abs(h) < 0:
-        h_new[i] = 0.
+    # for i, h in enumerate(h_new):
+    # if abs(h) < 0:
+    #   h_new[i] = 0.
 
     if scale is not None:
       min_data = np.min(h_new)
@@ -170,7 +170,7 @@ def apply_filter(data, filter_vals, scale=None):
 
       h_new = np.multiply(scale, h_new)
 
-    data_T_filtered[idx] = abs(h_new)
+    data_T_filtered[idx], phase = librosa.core.magphase(h_new)
 
   data_return = data_T_filtered.T
 
@@ -378,7 +378,7 @@ def eq(
   fb_sos, _ = librosa.filters._multirate_fb(
     eq_freqs,
     sample_rates,
-    Q=20.0,
+    Q=25.0,
     passband_ripple=0.01,
     stopband_attenuation=80
   )
@@ -434,7 +434,36 @@ def eq(
     )
     plt.colorbar()
 
-  data_out = db_to_amplitude(fb_mag, ref=1)
+  # Lowpass filter
+  start_freq = 4500
+  order = 32
+  ftype = 'butter'
+  rp = None
+  rs = None
+  if db_ref is not None:
+    ftype = 'cheby2'
+    rp = 0.01
+    rs = 80
+
+  w_lp, h_lp = design_filter(order=order, cutoff=[start_freq], fs=sr, freqs=n_fft//2 + 1, ftype=ftype, rp=rp, rs=rs)
+  data_low_pass = apply_filter(fb_mag, abs(h_lp))
+
+  dlp_min = np.min(data_low_pass)
+  remove_bacground = data_low_pass < 30
+  data_low_pass[remove_bacground] = dlp_min
+
+  if plot:
+    plt.figure(get_fig_nums() + 1)
+    plt.title('low pass')
+    specshow(
+      amplitude_to_db(abs(data_low_pass))
+      if db_ref is None else abs(data_low_pass),
+      x_axis='time',
+      y_axis='linear'
+    )
+    plt.colorbar()
+
+  data_out = db_to_amplitude(data_low_pass, ref=1)
   data_out_noisy = data_out
 
   return data_out_noisy
@@ -456,8 +485,9 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
   freq = fft_frequencies(sr=fs, n_fft=n_fft)
 
   # Get the equation and freq, db array from the audiogram provided
-  x_audiogram = [125, 250, 500, 1000, 1500, 2000, 4000]
-  y_audiogram = [40, 35, 40, 65, 75, 75, 80]
+  x_audiogram = [125, 250, 500, 1000, 1500, 2000, 2400, 2800, 3000]
+  y_audiogram = [10, 15, 0, -10, -30, -35, -40, -50, -60, -70]
+  # y_audiogram = [0, 0, 0, 0, 0, 0, 0]
   audiogram = process_audiogram(x_audiogram, y_audiogram, freq, plot)
 
   # Preemphasis to increase amplitude of high frequencies
@@ -470,13 +500,13 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
   db_ref = np.max
 
   # Consider using frequencies of phonomes.
-  eq_freqs = [315, 500, 800, 1250, 2000, 3150, 5000]
-  # mel_freqs = librosa.filters.mel_frequencies(
-  #   n_mels=20,
-  #   fmin=300.,
-  #   fmax=4000.,
-  #   htk=True
-  # )[:-2]
+  # eq_freqs = [125, 250, 500, 1000, 1500, 2000, 4000]
+  eq_freqs = librosa.filters.mel_frequencies(
+    n_mels=12,
+    fmin=100.,
+    fmax=5000.,
+    htk=True
+  )
   # mel_fb = librosa.filters.mel(
   #   fs,
   #   n_fft,
@@ -512,6 +542,43 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
     phase,
     plot
   )
+
+  data_proc_mag_td = istft(data_proc_mag, center=center, length=n)
+  if plot:
+    librosa.output.write_wav(
+      os.path.join(
+        constants.PP_DATA_DIR,
+        'preprocessed_unfiltered_magnitude.wav'
+      ),
+      data_proc_mag_td,
+      fs,
+      norm=True
+    )
+
+  data_proc_magphase_td = istft(data_proc_mag * phase, center=center, length=n)
+  if plot:
+    librosa.output.write_wav(
+      os.path.join(
+        constants.PP_DATA_DIR,
+        'preprocessed_unfiltered_magphase.wav'
+      ),
+      data_proc_magphase_td,
+      fs,
+      norm=True
+    )
+
+  data_proc_griffinlim_td = librosa.core.griffinlim(data_proc_mag)
+  if plot:
+    librosa.output.write_wav(
+      os.path.join(
+        constants.PP_DATA_DIR,
+        'preprocessed_unfiltered_griffinlim.wav'
+      ),
+      data_proc_griffinlim_td,
+      fs,
+      norm=True
+    )
+
   data_proc = data_proc_mag * phase
 
   # # compression parameters
@@ -537,13 +604,14 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
 
   # Denoising
 
+  # denoised_signal = data_mod
   denoised_signal = pra.denoise.apply_subspace(
     data_mod,
     frame_len=64,
-    mu=0.75,
-    lookback=10,
+    mu=2,
+    lookback=20,
     skip=1,
-    thresh=0.75,
+    thresh=0.85,
     data_type='float64'
   )
 
@@ -554,6 +622,14 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
 
   # Normalize
   denoised_signal = librosa.util.normalize(denoised_signal)
+  if plot:
+    librosa.output.write_wav(
+      os.path.join(constants.PP_DATA_DIR,
+                   'preprocessed_filtered.wav'),
+      denoised_signal,
+      fs,
+      norm=True
+    )
 
   return denoised_signal, audiogram
 
@@ -583,6 +659,12 @@ def download_corpus(download_flag=True, speaker=['clb']):
     corpus = CMUArcticCorpus(basedir=ARCTIC_DIR, download=download_flag)
 
   return corpus
+
+
+def save(data, filename, fs, norm=True):
+  librosa.output.write_wav(filename, data, fs, norm)
+
+  return
 
 
 def gen_processed_and_save_wav(corpus, play=False):
@@ -640,9 +722,22 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
   # (https://towardsdatascience.com/how-to-apply-machine-learning-and-deep-learning-methods-to-audio-analysis-615e286fcbbc)
 
   # Get the timeseries and sampling frequency
-  data = corpus[sentence_idx].data.astype(np.float64)
+  data = deepcopy(corpus[sentence_idx].data).astype(np.float64)
   data_raw = deepcopy(data)
   fs = corpus[sentence_idx].fs
+
+  if play:
+    plt.figure(get_fig_nums() + 1)
+    plt.title('input signal')
+    plt.plot(data_raw)
+
+  librosa.output.write_wav(
+    os.path.join(constants.PP_DATA_DIR,
+                 'raw.wav'),
+    data,
+    fs,
+    norm=True
+  )
 
   # Get the frequency distribution
   freq = fft_frequencies(sr=fs, n_fft=n_fft)
@@ -669,5 +764,5 @@ if __name__ == '__main__':
 
   corpus = download_corpus()
 
-  test(corpus, play=True)
+  test(corpus, sentence_idx=2, play=True)
   # gen_processed_and_save_wav(corpus, False)

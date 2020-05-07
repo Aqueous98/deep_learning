@@ -109,7 +109,8 @@ def generate_dataset(truth_type=None):
   if not os.path.exists(PP_DATA_DIR):
     create_preprocessed_dataset_directory()
   else:
-    corpus_len = len(corpus)
+    # corpus_len = len(corpus)
+    corpus_len = 2
     max_val = 0
     # Find maximum length of time series data to pad
     for i in range(corpus_len):
