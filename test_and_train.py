@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Conv2D, MaxPooling2D, Dropout, Flatten
+from tensorflow.keras.layers import Dense, Conv2D, MaxPooling2D, Dropout, Flatten, LSTM
 from tensorflow.keras.layers import Activation, ZeroPadding2D
 from tensorflow.keras.models import model_from_json
 from tensorflow.keras.callbacks import Callback, ModelCheckpoint
@@ -77,6 +77,8 @@ def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   """ Define the model architecture """
 
   model = Sequential()
+  model.add(LSTM(100, return_sequences=True))
+  model.add(Dense(257))
   model.summary()
 
   return model
