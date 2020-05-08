@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from shutil import rmtree
 
 
 def get_project_root() -> Path:
@@ -14,6 +15,7 @@ ARCTIC_DIR = os.path.join(DATA_DIR, 'Arctic')
 WAVE_DIR = os.path.join(DATA_DIR, 'wav_files')
 PP_DATA_DIR = os.path.join(DATA_DIR, 'preprocessed')
 NOISE_DIR = os.path.join(DATA_DIR, 'noise')
+LOGS_DIR = os.path.join(ROOT_DIR, 'logs')
 
 
 def create_arctic_directory():
@@ -27,7 +29,22 @@ def create_saved_wav_directory():
 
 
 def create_preprocessed_dataset_directories():
-  if not os.path.exists(PP_DATA_DIR):
+  try:
     os.makedirs(PP_DATA_DIR)
+  except OSError as ose:
+    print(ose)
+
+  try:
     os.makedirs(os.path.join(PP_DATA_DIR, "model"))
+  except OSError as ose:
+    print(ose)
+
+  try:
     os.makedirs(os.path.join(PP_DATA_DIR, "audio"))
+  except OSError as ose:
+    print(ose)
+
+
+def clear_logs():
+  if os.path.exists(LOGS_DIR):
+    rmtree(LOGS_DIR)
