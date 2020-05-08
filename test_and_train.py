@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Conv2D, LSTM, TimeDistributed
+from tensorflow.keras.layers import Dense, Conv2D, LSTM, TimeDistributed, Bidirectional
 from tensorflow.keras.layers import Activation, ZeroPadding2D
 from tensorflow.keras.models import model_from_json
 from tensorflow.keras.callbacks import Callback, ModelCheckpoint
@@ -97,7 +97,9 @@ def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   model = Sequential()
 
   model.add(tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(100)))
-  model.add(LSTM(100, return_sequences=True))
+  model.add(Bidirectional(LSTM(100, return_sequences=True)))
+  model.add(Bidirectional(LSTM(50)))
+  model.add(LSTM(100))
   model.add(Dense(output_shape))
 
   return model
