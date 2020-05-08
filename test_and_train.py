@@ -97,9 +97,11 @@ def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   model = Sequential()
 
   model.add(tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(100)))
-  model.add(Bidirectional(LSTM(100, return_sequences=True)))
+  model.add(Bidirectional(LSTM(200, return_sequences=True)))
+  model.add(Bidirectional(LSTM(150)))
   model.add(Bidirectional(LSTM(50)))
   model.add(LSTM(100))
+  model.add(LSTM(200))
   model.add(Dense(output_shape))
 
   return model
