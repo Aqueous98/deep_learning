@@ -33,7 +33,7 @@ def loss(target, pred):
 
 # dimensionality of input = number of frequency channels (257)
 model = tf.keras.Sequential()
-# model.add(tf.keras.layers.Dense(100, input_shape=(max_val, n_fft//2 + 1)))
+model.add(tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(100)))
 model.add(tf.keras.layers.LSTM(100, return_sequences=True))
 model.add(tf.keras.layers.Dense(257))
 
