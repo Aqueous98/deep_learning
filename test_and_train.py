@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Conv2D, LSTM, TimeDistributed
+from tensorflow.keras.layers import Dense, Conv2D, Conv3D, LSTM, TimeDistributed
 from tensorflow.keras.layers import Activation, ZeroPadding2D
 from tensorflow.keras.models import model_from_json
 from tensorflow.keras.callbacks import Callback, ModelCheckpoint
@@ -71,7 +71,7 @@ BATCH_SIZE = 32
 EPOCHS = 10
 max_val = 1
 
-CHUNK = 500
+CHUNK = 200
 
 # Model Parameters
 METRICS = ['mse', 'accuracy']
@@ -91,14 +91,94 @@ def normalize_sample(X):
   return X
 
 
-def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
-  """ Define the model architecture """
-  output_shape = input_shape[2]
-  model = Sequential()
+def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1, 1)):
+  """
+    Define the model architecture
 
-  model.add(tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(100)))
-  model.add(LSTM(100, return_sequences=True))
-  model.add(Dense(output_shape))
+    @param input_shape [BATCH_SIZE, no. of frames, no. of freq bins, 1 channel]
+  """
+  # model = Sequential()
+  input_layer = tf.keras.layers.Input(shape=input_shape, name='input_tensor')
+  enc_C2D_1 = Conv2D(
+    filters=32,
+    kernel_size=(3,
+                 3),
+    strides=(2,
+             2),
+    use_bias=False
+  )(
+    input_layer
+  )
+  enc_BN_1 = tf.keras.layers.BatchNormalization()(enc_C2D_1)
+  enc_Act_1 = tf.keras.layers.Activation("relu")(enc_BN_1)
+  enc_C2D_2 = Conv2D(
+    filters=32,
+    kernel_size=(3,
+                 3),
+    strides=(2,
+             2),
+    use_bias=False
+  )(
+    enc_Act_1
+  )
+  enc_BN_2 = tf.keras.layers.BatchNormalization()(enc_C2D_2)
+  enc_Act_2 = tf.keras.layers.Activation("relu")(enc_BN_2)
+  # Expanding dimension to accommodate conv2D lstm
+  # int_input_layer = tf.reshape(
+  #   tf.expand_dims(enc_Act_2,
+  #                  axis=0,
+  #                  name=None),
+  #   [
+  #     -1,
+  #     #  1,
+  #     enc_Act_2.shape[1],
+  #     enc_Act_2.shape[2],
+  #     enc_Act_2.shape[3]
+  #   ]
+  # )
+  Conv1D = tf.keras.layers.Conv1D(
+    filters=4,
+    kernel_size=3,
+    data_format='channels_last'
+  )
+  # (enc_BN_2)
+  ConvLSTM1D = tf.keras.layers.TimeDistributed((Conv1D))
+  enc_BiC2D_1 = tf.keras.layers.Bidirectional(ConvLSTM1D)(enc_Act_2)
+
+  # tf.keras.layers.ConvLSTM2D(
+  #   filters=4,
+  #   kernel_size=(1,
+  #                3),
+  #   data_format='channels_last',
+  #   return_sequences=True
+  # )
+  # enc_BiLSTM_cell = tf.keras.layers.Bidirectional(
+  #   LSTM(NFFT // 2,
+  #        return_sequences=False)
+  # )
+  # enc_BiLSTM_1 = tf.keras.layers.StackedRNNCells([enc_BiLSTM_cell] * 3)(
+  #   enc_BiC2D_1
+  # )
+
+  # print(int_input_layer.shape)
+
+  # enc_CLSTM_1 = tf.keras.layers.ConvLSTM2D(
+  #   filters=4,
+  #   kernel_size=(1,
+  #                3),
+  #   data_format='channels_last',
+  #   stateful=True,
+  #   return_sequences=True
+  # )(
+  #   enc_BN_2
+  # )
+
+  model = tf.keras.Model(inputs=input_layer, outputs=[enc_BiC2D_1])
+  # model.add(tf.keras.layers.ConvLSTM2D(filters=,kernel_size=,))
+  # model.add(Dense(output_shape))
+
+  # model.build()
+  model.summary()
 
   return model
 
@@ -126,7 +206,7 @@ def save_distributed_files(truth_type=None, corpus=None):
   @param truth_type None for both, 'raw' for non processed and 'eq' for equalized
   """
   print("Started saving chunks of data")
-  corpus_len = 1003  # len(corpus)
+  corpus_len = len(corpus)
   max_val = 0
   max_stft_len = 0
   # Find maximum length of time series data to pad
@@ -334,7 +414,7 @@ def save_distributed_files(truth_type=None, corpus=None):
   return memory_counter, max_stft_len, truth_type, corpus_len
 
 
-def concatenate_files(truth_type=None):
+def concatenate_files(truth_type=None, delete_flag=False):
   """
   Save the distributed files.
   """
@@ -354,141 +434,120 @@ def concatenate_files(truth_type=None):
                  "model",
                  "memory_counter.npy")
   )
-  os.remove(os.path.join(PP_DATA_DIR, "model", "memory_counter.npy"))
 
   max_stft_len = np.load(
     os.path.join(PP_DATA_DIR,
                  "model",
                  "max_stft_len.npy")
   )
-  os.remove(os.path.join(PP_DATA_DIR, "model", "max_stft_len.npy"))
 
   corpus_len = np.load(os.path.join(PP_DATA_DIR, "model", "corpus_len.npy"))
-  os.remove(os.path.join(PP_DATA_DIR, "model", "corpus_len.npy"))
 
-  X = np.zeros(shape=(corpus_len, max_stft_len, NFFT//2 + 1))
+  X = []
   y_eq = None
   y_raw = None
   if is_eq or is_both:
-    y_eq = np.zeros(shape=(corpus_len, max_stft_len, NFFT//2 + 1))
+    y_eq = []
   if is_raw or is_both:
-    y_raw = np.zeros(shape=(corpus_len, max_stft_len, NFFT//2 + 1))
+    y_raw = []
 
   end = 0
-  for file_i in range(memory_counter - 1):
-    start = file_i * CHUNK
-    end = start + CHUNK
-    # print("Loading blocks {}:{}".format(start, end))
-
-    X[start:end] = np.load(
-      os.path.join(PP_DATA_DIR,
-                   "model",
-                   "inputs_{}.npy".format(file_i))
-    )
-    os.remove(
+  for file_i in range(memory_counter):
+    x = np.load(
       os.path.join(PP_DATA_DIR,
                    "model",
                    "inputs_{}.npy".format(file_i))
     )
     if is_eq or is_both:
-      y_eq[start:end] = np.load(
-        os.path.join(PP_DATA_DIR,
-                     "model",
-                     "truths_eq_{}.npy".format(file_i))
-      )
-      os.remove(
+      y_eq_ = np.load(
         os.path.join(PP_DATA_DIR,
                      "model",
                      "truths_eq_{}.npy".format(file_i))
       )
     if is_raw or is_both:
-      y_raw[start:end] = np.load(
+      y_raw_ = np.load(
         os.path.join(PP_DATA_DIR,
                      "model",
                      "truths_raw_{}.npy".format(file_i))
       )
+    for i in range(x.shape[0]):
+      X.append(x[i])
+      if is_eq or is_both:
+        y_eq.append(y_eq_[i])
+      if is_raw or is_both:
+        y_raw.append(y_raw_[i])
+
+    print("Loaded blocks {}".format(file_i))
+
+  X = np.array(X)
+  print("Loaded blocks {}:{}".format(end, X.shape[0]))
+
+  if y_eq is None:
+    y_raw = np.array(y_raw)
+    np.savez_compressed(
+      os.path.join(PP_DATA_DIR,
+                   "model",
+                   "speech"),
+      inputs=X,
+      truths_raw=y_raw
+    )
+  elif y_raw is None:
+    y_eq = np.array(y_eq)
+    np.savez_compressed(
+      os.path.join(PP_DATA_DIR,
+                   "model",
+                   "speech"),
+      inputs=X,
+      truths_eq=y_eq
+    )
+  else:
+    np.savez_compressed(
+      os.path.join(PP_DATA_DIR,
+                   "model",
+                   "speech"),
+      inputs=X,
+      truths_raw=y_raw,
+      truths_eq=y_eq
+    )
+  print("Saved speech.npz")
+
+  if delete_flag:
+    print("Deleting temp files")
+
+    os.remove(os.path.join(PP_DATA_DIR, "model", "memory_counter.npy"))
+    print("Deleted memory_counter")
+
+    os.remove(os.path.join(PP_DATA_DIR, "model", "corpus_len.npy"))
+    print("Deleted corpus_len")
+
+    os.remove(os.path.join(PP_DATA_DIR, "model", "max_stft_len.npy"))
+    print("Deleted max_stft_len")
+
+    for file_i in range(memory_counter):
       os.remove(
         os.path.join(PP_DATA_DIR,
                      "model",
-                     "truths_raw_{}.npy".format(file_i))
+                     "inputs_{}.npy".format(file_i))
       )
-
-    print("Loaded blocks {}:{}".format(start, end))
-
-  X[end:] = np.load(
-    os.path.join(
-      PP_DATA_DIR,
-      "model",
-      "inputs_{}.npy".format(memory_counter - 1)
-    )
-  )
-  os.remove(
-    os.path.join(
-      PP_DATA_DIR,
-      "model",
-      "inputs_{}.npy".format(memory_counter - 1)
-    )
-  )
-  if is_eq or is_both:
-    y_eq[end:] = np.load(
-      os.path.join(
-        PP_DATA_DIR,
-        "model",
-        "truths_eq_{}.npy".format(memory_counter - 1)
-      )
-    )
-    os.remove(
-      os.path.join(
-        PP_DATA_DIR,
-        "model",
-        "truths_eq_{}.npy".format(memory_counter - 1)
-      )
-    )
-  if is_raw or is_both:
-    y_raw[end:] = np.load(
-      os.path.join(
-        PP_DATA_DIR,
-        "model",
-        "truths_raw_{}.npy".format(memory_counter - 1)
-      )
-    )
-    os.remove(
-      os.path.join(
-        PP_DATA_DIR,
-        "model",
-        "truths_raw_{}.npy".format(memory_counter - 1)
-      )
-    )
-
-  print("Loaded blocks {}:{}".format(end, X.shape[0]))
-
-  # Save files
-  np.save(
-    os.path.join(PP_DATA_DIR,
-                 "model",
-                 "inputs.npy"),
-    X,
-    allow_pickle=True
-  )
-
-  if is_eq or is_both:
-    np.save(
-      os.path.join(PP_DATA_DIR,
-                   "model",
-                   "truths_eq.npy"),
-      y_eq,
-      allow_pickle=True
-    )
-  if is_raw or is_both:
-    np.save(
-      os.path.join(PP_DATA_DIR,
-                   "model",
-                   "truths_raw.npy"),
-      y_raw,
-      allow_pickle=True
-    )
-
-  print("Saved processed dataset")
+      print("Deleted inputs_{}".format(file_i))
+      if is_raw or is_both:
+        os.remove(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_raw_{}.npy".format(file_i)
+          )
+        )
+        print("Deleted truths_raw_{}".format(file_i))
+      if is_eq or is_both:
+        os.remove(
+          os.path.join(
+            PP_DATA_DIR,
+            "model",
+            "truths_eq_{}.npy".format(file_i)
+          )
+        )
+        print("Deleted truths_eq_{}".format(file_i))
 
   if is_eq and not is_both:
     return X, y_eq, None
@@ -499,12 +558,12 @@ def concatenate_files(truth_type=None):
 
 
 def generate_dataset(truth_type):
-  corpus = download_corpus()
-  processed_data_path = os.path.join(PP_DATA_DIR, 'model')
-  if not os.path.exists(processed_data_path):
-    print("Creating preprocessed/model")
-    create_preprocessed_dataset_directories()
-  memory_counter, max_stft_len, truth_type, corpus_len = save_distributed_files(truth_type, corpus)
+  # corpus = download_corpus()
+  # processed_data_path = os.path.join(PP_DATA_DIR, 'model')
+  # if not os.path.exists(processed_data_path):
+  #   print("Creating preprocessed/model")
+  #   create_preprocessed_dataset_directories()
+  # memory_counter, max_stft_len, truth_type, corpus_len = save_distributed_files(truth_type, corpus)
   X, y, _ = concatenate_files(truth_type)
 
   return X, y, _
@@ -529,15 +588,12 @@ def load_dataset(truth_type='raw'):
   y_train = None
   y_val = None
 
-  if not os.path.isfile(os.path.join(PP_DATA_DIR, 'model', 'inputs.npy')):
+  if not os.path.isfile(os.path.join(PP_DATA_DIR, 'model', 'speech.npz')):
     X, y, _ = generate_dataset(truth_type)
   else:
-    X = np.load(os.path.join(PP_DATA_DIR, 'model', 'inputs.npy'))
-    y = np.load(
-      os.path.join(PP_DATA_DIR,
-                   'model',
-                   'truths_{}.npy').format(truth_type)
-    )
+    SPEECH = np.load(os.path.join(PP_DATA_DIR, 'model', 'speech.npz'))
+    X = SPEECH['inputs']
+    y = SPEECH['truths_{}'.format(truth_type)]
 
   # Generate training and testing set
   X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
@@ -597,15 +653,32 @@ def test_and_train(model_name='speech2speech', retrain=True):
     X = X_train
     y = y_train
 
-    print("x_train shape:", X_train.shape, "y_train shape:", y_train.shape)
+    X_train_norm_ = normalize_sample(X_train)
+    X_train_norm = np.expand_dims(
+      X_train_norm_,
+      axis=1
+    ).reshape(-1,
+              X_train_norm_.shape[1],
+              X_train_norm_.shape[2],
+              1)
 
-    X_train_norm = normalize_sample(X_train)
-    X_val_norm = normalize_sample(X_val)
+    X_val_norm_ = normalize_sample(X_val)
+    X_val_norm = np.expand_dims(
+      X_val_norm_,
+      axis=1
+    ).reshape(-1,
+              X_val_norm_.shape[1],
+              X_val_norm_.shape[2],
+              1)
+
     y_train_norm = normalize_sample(y_train)
     y_val_norm = normalize_sample(y_val)
+
+    print("X shape:", X_train_norm.shape, "y shape:", y_train_norm.shape)
+
     model = None
 
-    model = gen_model(X_train_norm.shape)
+    model = gen_model(tuple(X_train_norm.shape[1:]))
     print('Created Model...')
 
     model.compile(loss=LOSS, optimizer=OPTIMIZER, metrics=METRICS)
@@ -673,7 +746,7 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
 
 if __name__ == '__main__':
-  clear_logs()
-  test_and_train(model_name='speech2speech', retrain=True)
+  # clear_logs()
+  # test_and_train(model_name='speech2speech', retrain=True)
   # print(timeit.timeit(generate_dataset, number=1))
-  # generate_dataset(truth_type='raw')
+  generate_dataset(truth_type='raw')
