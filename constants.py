@@ -16,6 +16,7 @@ WAVE_DIR = os.path.join(DATA_DIR, 'wav_files')
 PP_DATA_DIR = os.path.join(DATA_DIR, 'preprocessed')
 NOISE_DIR = os.path.join(DATA_DIR, 'noise')
 LOGS_DIR = os.path.join(ROOT_DIR, 'logs')
+MODEL_DIR = os.path.join(DATA_DIR, 'models')
 
 
 def create_arctic_directory():

@@ -395,7 +395,7 @@ def eq(
       plt.plot(freqs, np.abs(fb_filter))
 
   fb = np.array(fb)
-  fb_smoothened = np.zeros((fb.shape[1],), dtype=np.float)
+  fb_smoothened = np.zeros((fb.shape[1], ), dtype=np.float)
   for filt in fb:
     fb_smoothened += abs(filt)
 
