@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn import preprocessing
+from sklearn.preprocessing import normalize
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 
@@ -36,7 +37,7 @@ root_path = 'data/'
 # Global vars to change here
 NFFT = 512
 FS = 16000
-BATCH_SIZE = 32
+BATCH_SIZE = 4
 EPOCHS = 100
 max_val = 1
 
@@ -98,7 +99,12 @@ def pad(data, length):
 def normalize_sample(X):
   """ Normalize the sample """
 
-  X = X / np.linalg.norm(X)
+  if X.shape[1] != NFFT//2 + 1:
+    for i, x in enumerate(X):
+      X_norm = normalize(x, axis=1, norm='max')
+      X[i] = X_norm
+  else:
+    X = normalize(X, axis=1, norm='max')
 
   return X
 
@@ -224,7 +230,7 @@ def save_distributed_files(truth_type=None, corpus=None):
   @param truth_type None for both, 'raw' for non processed and 'eq' for equalized
   """
   print("Started saving chunks of data")
-  corpus_len = 1003  # len(corpus)
+  corpus_len = len(corpus)
   max_val = 0
   max_stft_len = 0
   # Find maximum length of time series data to pad
@@ -456,8 +462,8 @@ def concatenate_files(truth_type=None, delete_flag=False):
   return X, y_raw, y_eq
 
 
-def generate_dataset(truth_type, delete_flag=False):
-  corpus = download_corpus()
+def generate_dataset(truth_type, delete_flag=False, speaker=[]):
+  corpus = download_corpus(speaker=speaker)
   processed_data_path = os.path.join(PP_DATA_DIR, 'model')
   if not os.path.exists(processed_data_path):
     print("Creating preprocessed/model")
@@ -488,7 +494,7 @@ def load_dataset(truth_type='raw'):
   y_val = None
 
   if not os.path.isfile(os.path.join(PP_DATA_DIR, 'model', 'speech.npz')):
-    X, y, _ = generate_dataset(truth_type, delete_flag=True)
+    X, y, _ = generate_dataset(truth_type, delete_flag=True, speaker=['clb'])
   else:
     SPEECH = np.load(os.path.join(PP_DATA_DIR, 'model', 'speech.npz'))
     X = SPEECH['inputs']
@@ -609,8 +615,6 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
     model = save_model(model, model_name)
 
-  min_y, max_y = np.min(y_test), np.max(y_test)
-  print("Minimum: ", min_y)
   X_test_norm = normalize_sample(X_test)
   y_test_norm = normalize_sample(y_test)
 
@@ -624,8 +628,13 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
   # Randomly pick 1 test
   idx = random.randint(0, len(X) - 1)
-  test = X[idx]
-  target = y[idx]
+  min_y, max_y = np.min(y_test[idx]), np.max(y_test[idx])
+  min_x, max_x = np.min(y_test[idx]), np.max(y_test[idx])
+  print("MinY: {}\tMaxY{}".format(min_y, max_y))
+  print("MinX: {}\tMaxX{}".format(min_x, max_x))
+
+  test = normalize_sample(X_test[idx])
+  target = y_test[idx]
 
   # Reshape test to single sentence
   test_reshaped = np.expand_dims(test, axis=0)
@@ -635,8 +644,8 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
   # Rescale
   output_lowdim = (y_pred.T) * (max_y-min_y)
-  input_lowdim = (test.T) * (max_y-min_y)
-  target_lowdim = (target.T) * (max_y-min_y)
+  input_lowdim = (test.T) * (max_x-min_x)
+  target_lowdim = (target.T)  # * (max_y-min_y)
 
   # GriffinLim Vocoder
   output_sound = librosa.core.griffinlim(output_lowdim)
