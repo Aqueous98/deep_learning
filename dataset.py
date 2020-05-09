@@ -102,6 +102,8 @@ def generate_dataset(truth_type=None, speaker=[], corpus_len=None):
   # Get each sentence from corpus and add random noise/echos/both to the input
   # and preprocess the output. Also pad the signals to the max_val
   for i in range(corpus_len):
+  
+  
     start = datetime.datetime.now()
 
     # Original data in time domain
@@ -131,19 +133,19 @@ def generate_dataset(truth_type=None, speaker=[], corpus_len=None):
       random_sample = pad(bothsample, max_val + NFFT//2)
 
     # Append random_sample to input list
-    X.append(random_sample)
+    X = random_sample
 
     # Equalize data for high frequency hearing loss
     data_eq = None
     if is_eq or is_both:
       data_eq, _ = process_sentence(yi, fs=fs)
-      y_eq.append(data_eq)
+      y_eq = data_eq
 
     # Use non processed input and pad as well
     data_raw = None
     if is_raw or is_both:
       data_raw = deepcopy(yi)
-      y_raw.append(data_raw)
+      y_raw = data_raw
 
     # print("Padded {}".format(i))
     dt = datetime.datetime.now() - start
@@ -152,40 +154,42 @@ def generate_dataset(truth_type=None, speaker=[], corpus_len=None):
     if (i % CHUNK == CHUNK - 1):
       print("Time taken for {}: {}ms".format(i, (i+1) * avg_time))
 
-  X = np.array(X)
-
-  # Save the data
-  np.save(os.path.join(PP_DATA_DIR, "model", "inputs.npy"), X)
-
-  if is_eq or is_both:
+    X = np.array(X)
     y_eq = np.array(y_eq)
-    np.save(os.path.join(PP_DATA_DIR, "model", "truths_eq.npy"), y_eq)
 
-  if is_raw or is_both:
-    y_raw = np.array(y_raw)
-    np.save(os.path.join(PP_DATA_DIR, "model", "truths_raw.npy"), y_eq)
 
-  if y_raw is not None and y_eq is None:
-    np.savez_compressed(
+    # Save the data
+   # np.save(os.path.join(PP_DATA_DIR, "model", str("inputs"+i+".npy")   ), X)
+
+    #if is_eq or is_both:
+     # y_eq = np.array(y_eq)
+     # np.save(os.path.join(PP_DATA_DIR, "model", str("truths_eq"+i+".npy") ), y_eq)
+
+   # if is_raw or is_both:
+    #  y_raw = np.array(y_raw)
+     # np.save(os.path.join(PP_DATA_DIR, "model", str("truths_raw"+i+".npy") ), y_eq)
+
+    if y_raw is not None and y_eq is None:
+      np.savez_compressed(
       os.path.join(PP_DATA_DIR,
                    "model",
-                   "speech"),
+                   str("speech"+str(i))),
       inputs=X,
       truths_raw=y_raw
     )
-  elif y_eq is not None and y_raw is None:
-    np.savez_compressed(
+    elif y_eq is not None and y_raw is None:
+      np.savez_compressed(
       os.path.join(PP_DATA_DIR,
                    "model",
-                   "speech"),
+                   str("speech"+str(i))),
       inputs=X,
       truths_raw=y_eq
     )
-  else:
-    np.savez_compressed(
+    else:
+      np.savez_compressed(
       os.path.join(PP_DATA_DIR,
                    "model",
-                   "speech"),
+                   str("speech"+str(i))),
       inputs=X,
       truths_raw=y_raw,
       truths_eq=y_eq
@@ -235,7 +239,8 @@ def load_dataset(truth_type='raw', speaker=None, corpus_len=None):
 
 
 def test():
-  generate_dataset('raw', corpus_len=200)
+  #print(load_dataset('raw', corpus_len=200) )
+  generate_dataset('raw', corpus_len=2000)
 
 
 if __name__ == '__main__':
