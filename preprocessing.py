@@ -651,6 +651,13 @@ def obtain_fft_in_db(data, n_fft):
 
 
 def download_corpus(download_flag=True, speaker=[]):
+  """
+    Download the corpus
+
+    @param download_flag
+    @param speaker
+  """
+
   # Download the corpus, be patient
   corpus = None
   if os.path.exists(ARCTIC_DIR):

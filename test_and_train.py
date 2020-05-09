@@ -123,42 +123,35 @@ def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1, 1)):
   )
   enc_BN_2 = tf.keras.layers.BatchNormalization()(enc_C2D_2)
   enc_Act_2 = tf.keras.layers.Activation("relu")(enc_BN_2)
-  # Expanding dimension to accommodate conv2D lstm
-  # int_input_layer = tf.reshape(
-  #   tf.expand_dims(enc_Act_2,
-  #                  axis=0,
-  #                  name=None),
-  #   [
-  #     -1,
-  #     #  1,
-  #     enc_Act_2.shape[1],
-  #     enc_Act_2.shape[2],
-  #     enc_Act_2.shape[3]
-  #   ]
-  # )
-  Conv1D = tf.keras.layers.Conv1D(
-    filters=4,
-    kernel_size=3,
-    data_format='channels_last'
-  )
-  # (enc_BN_2)
-  ConvLSTM1D = tf.keras.layers.TimeDistributed((Conv1D))
-  enc_BiC2D_1 = tf.keras.layers.Bidirectional(ConvLSTM1D)(enc_Act_2)
 
-  # tf.keras.layers.ConvLSTM2D(
-  #   filters=4,
-  #   kernel_size=(1,
-  #                3),
-  #   data_format='channels_last',
-  #   return_sequences=True
-  # )
-  # enc_BiLSTM_cell = tf.keras.layers.Bidirectional(
-  #   LSTM(NFFT // 2,
-  #        return_sequences=False)
-  # )
-  # enc_BiLSTM_1 = tf.keras.layers.StackedRNNCells([enc_BiLSTM_cell] * 3)(
-  #   enc_BiC2D_1
-  # )
+  # Expanding dimension to accommodate conv2D lstm
+  int_input_layer = tf.reshape(
+    tf.expand_dims(enc_Act_2,
+                   axis=0,
+                   name=None),
+    [-1,
+     1,
+     enc_Act_2.shape[1],
+     enc_Act_2.shape[2],
+     enc_Act_2.shape[3]]
+  )
+
+  enc_BiC2D_1 = tf.keras.layers.ConvLSTM2D(
+    filters=4,
+    kernel_size=(1,
+                 3),
+    data_format='channels_last',
+    return_sequences=True
+  )(
+    int_input_layer
+  )
+
+  BiLSTM_cell = tf.keras.layers.Bidirectional(
+    tf.keras.layers.LSTMCell(int(NFFT / 2),
+                             return_sequences=False)
+  )
+  BiLSTM_Stacked = tf.keras.layers.StackedRNNCells([BiLSTM_cell] * 3)
+  enc_BiLSTM_Stacked = tf.keras.layers.RNN(BiLSTM_Stacked)(enc_BiC2D_1)
 
   # print(int_input_layer.shape)
 
@@ -173,7 +166,7 @@ def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1, 1)):
   #   enc_BN_2
   # )
 
-  model = tf.keras.Model(inputs=input_layer, outputs=[enc_BiC2D_1])
+  model = tf.keras.Model(inputs=input_layer, outputs=[enc_BiLSTM_Stacked])
   # model.add(tf.keras.layers.ConvLSTM2D(filters=,kernel_size=,))
   # model.add(Dense(output_shape))
 
@@ -206,7 +199,7 @@ def save_distributed_files(truth_type=None, corpus=None):
   @param truth_type None for both, 'raw' for non processed and 'eq' for equalized
   """
   print("Started saving chunks of data")
-  corpus_len = len(corpus)
+  corpus_len = 1003  # len(corpus)
   max_val = 0
   max_stft_len = 0
   # Find maximum length of time series data to pad
@@ -558,12 +551,12 @@ def concatenate_files(truth_type=None, delete_flag=False):
 
 
 def generate_dataset(truth_type):
-  # corpus = download_corpus()
-  # processed_data_path = os.path.join(PP_DATA_DIR, 'model')
-  # if not os.path.exists(processed_data_path):
-  #   print("Creating preprocessed/model")
-  #   create_preprocessed_dataset_directories()
-  # memory_counter, max_stft_len, truth_type, corpus_len = save_distributed_files(truth_type, corpus)
+  corpus = download_corpus()
+  processed_data_path = os.path.join(PP_DATA_DIR, 'model')
+  if not os.path.exists(processed_data_path):
+    print("Creating preprocessed/model")
+    create_preprocessed_dataset_directories()
+  memory_counter, max_stft_len, truth_type, corpus_len = save_distributed_files(truth_type, corpus)
   X, y, _ = concatenate_files(truth_type)
 
   return X, y, _
@@ -746,7 +739,6 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
 
 if __name__ == '__main__':
-  # clear_logs()
-  # test_and_train(model_name='speech2speech', retrain=True)
-  # print(timeit.timeit(generate_dataset, number=1))
-  generate_dataset(truth_type='raw')
+  clear_logs()
+  test_and_train(model_name='speech2speech', retrain=True)
+  # generate_dataset(truth_type='raw')
