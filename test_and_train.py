@@ -133,20 +133,27 @@ def get_encoder_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   int_C1DLSTM_out = tf.squeeze(ConvLSTM1D, axis=[1])
 
   # 3 Stacked Bidirectional LSTMs
-  enc_BiLSTM_1 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_1')(int_C1DLSTM_out)
-  enc_BiLSTM_2 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_2')(enc_BiLSTM_1)
-  enc_BiLSTM_3 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_3')(enc_BiLSTM_2)
+  # enc_BiLSTM_1 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_1')(int_C1DLSTM_out)
+  # enc_BiLSTM_2 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_2')(enc_BiLSTM_1)
+  # enc_BiLSTM_3 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_3')(enc_BiLSTM_2)
 
   # Linear Projection into NFFT/2 and batchnorm and ReLU
-  enc_Dense_1 = Dense(NFFT // 8, name='Enc_Linear_Projection')(enc_BiLSTM_3)
-  enc_BN_3 = BatchNormalization(name='Enc_Batch_Norm_3')(enc_Dense_1)
-  enc_Act_3 = Activation("relu", name='Enc_ReLU_3')(enc_BN_3)
+  # enc_Dense_1 = Dense(NFFT // 8, name='Enc_Linear_Projection')(int_C1DLSTM_out)
+  # enc_BN_3 = BatchNormalization(name='Enc_Batch_Norm_3')(enc_Dense_1)
+  # enc_Act_3 = Activation("relu", name='Enc_ReLU_3')(enc_BN_3)
 
-  encoder = tf.keras.Model(inputs=input_layer, outputs=[enc_Act_3], name='Encoder')
+  # encoder = tf.keras.Model(inputs=input_layer, outputs=[enc_Act_3], name='Encoder')
 
   # Begin DeConvolution
-  deConv_input_expand_dims = tf.reshape(tf.expand_dims(enc_Act_3, axis=1), [-1, 1, enc_Act_3.shape[1], enc_Act_3.shape[2]])
-  DeC1D_filters = enc_Act_3.shape[2]
+  deConv_input_expand_dims = tf.reshape(
+    tf.expand_dims(int_C1DLSTM_out,
+                   axis=1),
+    [-1,
+     1,
+     int_C1DLSTM_out.shape[1],
+     int_C1DLSTM_out.shape[2]]
+  )
+  DeC1D_filters = int_C1DLSTM_out.shape[2]
   Act = deConv_input_expand_dims
   for i in range(2):
     DeC1D = Conv2DTranspose(
@@ -438,6 +445,8 @@ def concatenate_files(truth_type=None, delete_flag=False):
     y_eq = np.array(y_eq)
     np.savez_compressed(os.path.join(PP_DATA_DIR, "model", "speech"), inputs=X, truths_eq=y_eq)
   else:
+    y_raw = np.array(y_raw)
+    y_eq = np.array(y_eq)
     np.savez_compressed(os.path.join(PP_DATA_DIR, "model", "speech"), inputs=X, truths_raw=y_raw, truths_eq=y_eq)
   print("Saved speech.npz")
 
@@ -507,6 +516,8 @@ def load_dataset(truth_type='raw'):
   else:
     SPEECH = np.load(os.path.join(PP_DATA_DIR, 'model', 'speech.npz'))
     X = SPEECH['inputs']
+    if truth_type is None:
+      truth_type = 'raw'
     y = SPEECH['truths_{}'.format(truth_type)]
 
   # Generate training and testing set
@@ -555,7 +566,7 @@ def test_and_train(model_name='speech2speech', retrain=True):
     @param retrain True if retrain, False if load from pretrained model
   """
 
-  (X_train, y_train), (X_val, y_val), (X_test, y_test) = load_dataset(truth_type='raw')
+  (X_train, y_train), (X_val, y_val), (X_test, y_test) = load_dataset(truth_type=None)
   X = X_train
   y = y_train
   model = None
@@ -587,7 +598,9 @@ def test_and_train(model_name='speech2speech', retrain=True):
     print('Created Model...')
 
     model.compile(loss=LOSS, optimizer=OPTIMIZER, metrics=METRICS)
-    print('Compiled Model...')
+    print('Metrics for Model...')
+
+    print(model.metrics_names)
 
     log_dir = os.path.join(LOGS_DIR, 'files', datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
@@ -632,8 +645,8 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
   model = model_load(model_name)
 
-  _, mse, accuracy = model.evaluate(X, y, verbose=0)
-  print('Testing accuracy: {}, Testing MSE: {}'.format(accuracy * 100, mse))
+  print(model.evaluate(X, y, verbose=0))  # _, mse, accuracy =
+  # print('Testing accuracy: {}, Testing MSE: {}'.format(accuracy * 100, mse))
 
   # Randomly pick 1 test
   idx = random.randint(0, len(X) - 1)

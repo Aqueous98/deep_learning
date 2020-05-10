@@ -1,6 +1,9 @@
 import os, argparse, sys, shutil
 from pathlib import Path
 
+import datetime
+import time
+
 import numpy as np
 
 from scipy.interpolate import interp1d
@@ -61,8 +64,7 @@ def process_audiogram(x_audiogram, y_audiogram, freq, plot=False):
   audiogram_eq, (x_audiogram, y_audiogram) = get_audiogram(x_audiogram, y_audiogram, 'linear')
 
   x_range_audiogram = freq[freq >= np.min(x_audiogram)]
-  x_range_audiogram = x_range_audiogram[
-    x_range_audiogram <= np.max(x_audiogram)]
+  x_range_audiogram = x_range_audiogram[x_range_audiogram <= np.max(x_audiogram)]
 
   audiogram = np.array([audiogram_eq(x) for x in x_range_audiogram])
   audiogram = (x_range_audiogram, audiogram)
@@ -95,12 +97,7 @@ def plot_audiogram(source, audiogram, modulated=None, extra_fram_idx_arg=None):
   if modulated is not None:
     plt.plot(modulated[0], modulated[1], 'g-')
 
-  plt.legend(
-    ['source',
-     'audiogram',
-     'modulated'] if modulated is not None else ['source',
-                                                 'audiogram']
-  )
+  plt.legend(['source', 'audiogram', 'modulated'] if modulated is not None else ['source', 'audiogram'])
 
   plt.ylim((-40, 120))
   plt.xlim((0, 8 * 1e3))
@@ -117,27 +114,8 @@ def butter_filter(data, cutoff, fs, order, btype='low'):
   return y
 
 
-def design_filter(
-  order,
-  cutoff,
-  btype='lowpass',
-  ftype='butter',
-  fs=None,
-  freqs=(512 // 2),
-  rp=None,
-  rs=None
-):
-  b, a = scipy.signal.iirfilter(
-    order,
-    cutoff,
-    btype=btype,
-    analog=False,
-    ftype=ftype,
-    output='ba',
-    fs=fs,
-    rp=rp,
-    rs=rs
-  )
+def design_filter(order, cutoff, btype='lowpass', ftype='butter', fs=None, freqs=(512 // 2), rp=None, rs=None):
+  b, a = scipy.signal.iirfilter(order, cutoff, btype=btype, analog=False, ftype=ftype, output='ba', fs=fs, rp=rp, rs=rs)
 
   a = 1 if a is None else a
   w, h = scipy.signal.freqz(b, a, worN=freqs, fs=fs)
@@ -177,17 +155,7 @@ def apply_filter(data, filter_vals, scale=None):
   return data_return
 
 
-def nlfc(
-  data_orig_mod,
-  freq,
-  n,
-  db_ref,
-  start_freq,
-  compression_ratio,
-  compression_frequency,
-  compression_nfft,
-  compress=True
-):
+def nlfc(data_orig_mod, freq, n, db_ref, start_freq, compression_ratio, compression_frequency, compression_nfft, compress=True):
   order = 32
   ftype = 'butter'
   rp = None
@@ -202,11 +170,7 @@ def nlfc(
 
   plt.figure(get_fig_nums() + 1)
   plt.title('low pass')
-  specshow(
-    amplitude_to_db(data_low_pass) if db_ref is None else data_low_pass,
-    x_axis='time',
-    y_axis='linear'
-  )
+  specshow(amplitude_to_db(data_low_pass) if db_ref is None else data_low_pass, x_axis='time', y_axis='linear')
   plt.colorbar()
 
   # Highpass filter
@@ -215,33 +179,19 @@ def nlfc(
 
   plt.figure(get_fig_nums() + 1)
   plt.title('high pass before')
-  specshow(
-    amplitude_to_db(data_high_pass) if db_ref is None else data_high_pass,
-    x_axis='time',
-    y_axis='linear'
-  )
+  specshow(amplitude_to_db(data_high_pass) if db_ref is None else data_high_pass, x_axis='time', y_axis='linear')
   plt.colorbar()
 
   # Convert signals back to time domain
   data_high_pass_td = istft(data_high_pass, center=center, length=n)
 
   # Resample time-domain signal
-  data_high_pass_td = librosa.core.resample(
-    data_high_pass_td,
-    fs,
-    compression_frequency
-  )
+  data_high_pass_td = librosa.core.resample(data_high_pass_td, fs, compression_frequency)
   n2 = len(data_high_pass_td)
 
   # FFT with 172 Hz bins and 1.45ms rate
-  resample_freqs = fft_frequencies(
-    sr=compression_frequency,
-    n_fft=compression_nfft
-  )
-  data_hp_padded = librosa.util.fix_length(
-    data_high_pass_td,
-    n2 + compression_nfft//2
-  )
+  resample_freqs = fft_frequencies(sr=compression_frequency, n_fft=compression_nfft)
+  data_hp_padded = librosa.util.fix_length(data_high_pass_td, n2 + compression_nfft//2)
 
   adf = lambda frq_list: abs(frq_list - start_freq)
   sf_idx = np.where(freq == min(freq, key=adf))[0][0]
@@ -254,11 +204,7 @@ def nlfc(
     adf_in = lambda frq_list: abs(frq_list - f)
     idx = np.where(resample_freqs == min(resample_freqs, key=adf_in))[0][0]
 
-    modulated_carrier_freqs_dict.update(
-      {(idx,
-        resample_freqs[idx]): (idx,
-                               resample_freqs[idx])}
-    )
+    modulated_carrier_freqs_dict.update({(idx, resample_freqs[idx]): (idx, resample_freqs[idx])})
     modulated_carrier_freqs.append(idx)
 
   for i, f in enumerate(freq[freq >= freq[sf_idx]]):
@@ -268,14 +214,9 @@ def nlfc(
 
     f_out = start_freq**(1 - compression_ratio) * f**(compression_ratio)
     adf_out = lambda frq_list: abs(frq_list - f_out)
-    frq_idx = np.where(resample_freqs == min(resample_freqs,
-                                             key=adf_out))[0][0]
+    frq_idx = np.where(resample_freqs == min(resample_freqs, key=adf_out))[0][0]
 
-    modulated_carrier_freqs_dict.update(
-      {(idx,
-        resample_freqs[idx]): (frq_idx,
-                               resample_freqs[frq_idx])}
-    )
+    modulated_carrier_freqs_dict.update({(idx, resample_freqs[idx]): (frq_idx, resample_freqs[frq_idx])})
     modulated_carrier_freqs.append(frq_idx)
 
   data_hp_resampled = stft(data_hp_padded, n_fft=512, center=center)
@@ -289,11 +230,7 @@ def nlfc(
   modulated_carrier_td = istft(modulated_carrier, center=center, length=n2)
 
   # Resample time-domain signal
-  data_high_pass_td_new = librosa.core.resample(
-    modulated_carrier_td,
-    compression_frequency,
-    fs
-  )
+  data_high_pass_td_new = librosa.core.resample(modulated_carrier_td, compression_frequency, fs)
 
   # Pad the data since istft will drop any data in the last frame if samples are
   # less than n_fft.
@@ -311,38 +248,19 @@ def nlfc(
 
   plt.figure(get_fig_nums() + 1)
   plt.title('high pass after')
-  specshow(
-    amplitude_to_db(data_high_pass_modulated)
-    if db_ref is None else data_high_pass_modulated,
-    x_axis='time',
-    y_axis='linear'
-  )
+  specshow(amplitude_to_db(data_high_pass_modulated) if db_ref is None else data_high_pass_modulated, x_axis='time', y_axis='linear')
   plt.colorbar()
   # plt.show()
 
   plt.figure(get_fig_nums() + 1)
   plt.title('stacked')
-  specshow(
-    amplitude_to_db(data_stacked) if db_ref is None else data_stacked,
-    x_axis='time',
-    y_axis='linear'
-  )
+  specshow(amplitude_to_db(data_stacked) if db_ref is None else data_stacked, x_axis='time', y_axis='linear')
   plt.colorbar()
 
   return data_stacked
 
 
-def eq(
-  data_db,
-  eq_freqs,
-  audiogram,
-  sr,
-  n_fft,
-  db_ref,
-  data_amp,
-  phase,
-  plot=False
-):
+def eq(data_db, eq_freqs, audiogram, sr, n_fft, db_ref, data_amp, phase, plot=False):
 
   data_raw = deepcopy(data_amp)
   # mag, phase = librosa.core.magphase(data_raw)
@@ -365,23 +283,13 @@ def eq(
   if plot:
     plt.figure(get_fig_nums() + 1)
     plt.title('data halved')
-    specshow(
-      amplitude_to_db(data_halved) if db_ref is None else data_halved,
-      x_axis='time',
-      y_axis='linear'
-    )
+    specshow(amplitude_to_db(data_halved) if db_ref is None else data_halved, x_axis='time', y_axis='linear')
     plt.colorbar()
 
   eq_freqs = np.array(eq_freqs)
   sample_rates = np.array([sr for _ in eq_freqs])
 
-  fb_sos, _ = librosa.filters._multirate_fb(
-    eq_freqs,
-    sample_rates,
-    Q=25.0,
-    passband_ripple=0.01,
-    stopband_attenuation=80
-  )
+  fb_sos, _ = librosa.filters._multirate_fb(eq_freqs, sample_rates, Q=25.0, passband_ripple=0.01, stopband_attenuation=80)
   max_scaling = np.max(audiogram[1])
   scaled_audiogram = audiogram[1] / 120.
   fb = []
@@ -400,11 +308,7 @@ def eq(
     fb_smoothened += abs(filt)
 
   data_halved_complete = data_halved
-  filtered_data = apply_filter(
-    data_halved_complete,
-    abs(fb_smoothened),
-    scaled_audiogram
-  )
+  filtered_data = apply_filter(data_halved_complete, abs(fb_smoothened), scaled_audiogram)
   # fb_mag, fb_phase = librosa.core.magphase(filtered_data)
   fb_mag = filtered_data
   fb_mag += data_halved
@@ -412,11 +316,7 @@ def eq(
   if plot:
     plt.figure(get_fig_nums() + 1)
     plt.title('filtered')
-    specshow(
-      amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag),
-      x_axis='time',
-      y_axis='linear'
-    )
+    specshow(amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag), x_axis='time', y_axis='linear')
     plt.colorbar()
 
   db_shift = 65
@@ -427,11 +327,7 @@ def eq(
   if plot:
     plt.figure(get_fig_nums() + 1)
     plt.title('final output')
-    specshow(
-      amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag),
-      x_axis='time',
-      y_axis='linear'
-    )
+    specshow(amplitude_to_db(abs(fb_mag)) if db_ref is None else abs(fb_mag), x_axis='time', y_axis='linear')
     plt.colorbar()
 
   # Lowpass filter
@@ -455,16 +351,11 @@ def eq(
   if plot:
     plt.figure(get_fig_nums() + 1)
     plt.title('low pass')
-    specshow(
-      amplitude_to_db(abs(data_low_pass))
-      if db_ref is None else abs(data_low_pass),
-      x_axis='time',
-      y_axis='linear'
-    )
+    specshow(amplitude_to_db(abs(data_low_pass)) if db_ref is None else abs(data_low_pass), x_axis='time', y_axis='linear')
     plt.colorbar()
 
   data_out = db_to_amplitude(data_low_pass, ref=1)
-  data_out_noisy = data_out
+  data_out_noisy = scipy.signal.wiener(data_out, mysize=[n_fft, 3], noise=0.01)
 
   return data_out_noisy
 
@@ -501,12 +392,7 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
 
   # Consider using frequencies of phonomes.
   # eq_freqs = [125, 250, 500, 1000, 1500, 2000, 4000]
-  eq_freqs = librosa.filters.mel_frequencies(
-    n_mels=12,
-    fmin=100.,
-    fmax=5000.,
-    htk=True
-  )
+  eq_freqs = librosa.filters.mel_frequencies(n_mels=12, fmin=100., fmax=5000., htk=True)
   # mel_fb = librosa.filters.mel(
   #   fs,
   #   n_fft,
@@ -531,26 +417,14 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
   # Multiply new magnitude with saved phase to reconstruct sentence
   data_orig_mod = mag * phase  # mag_inv
 
-  data_proc_mag = eq(
-    fb_filtered,
-    eq_freqs,
-    audiogram,
-    fs,
-    n_fft,
-    db_ref,
-    mag,
-    phase,
-    plot
-  )
+  data_proc_mag = eq(fb_filtered, eq_freqs, audiogram, fs, n_fft, db_ref, mag, phase, plot)
 
   data_proc_mag_td = istft(data_proc_mag, center=center, length=n)
   if plot:
     librosa.output.write_wav(
-      os.path.join(
-        constants.PP_DATA_DIR,
-        "audio",
-        'preprocessed_unfiltered_magnitude.wav'
-      ),
+      os.path.join(constants.PP_DATA_DIR,
+                   "audio",
+                   'preprocessed_unfiltered_magnitude.wav'),
       data_proc_mag_td,
       fs,
       norm=True
@@ -559,11 +433,9 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
   data_proc_magphase_td = istft(data_proc_mag * phase, center=center, length=n)
   if plot:
     librosa.output.write_wav(
-      os.path.join(
-        constants.PP_DATA_DIR,
-        "audio",
-        'preprocessed_unfiltered_magphase.wav'
-      ),
+      os.path.join(constants.PP_DATA_DIR,
+                   "audio",
+                   'preprocessed_unfiltered_magphase.wav'),
       data_proc_magphase_td,
       fs,
       norm=True
@@ -572,11 +444,9 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
   data_proc_griffinlim_td = librosa.core.griffinlim(data_proc_mag)
   if plot:
     librosa.output.write_wav(
-      os.path.join(
-        constants.PP_DATA_DIR,
-        "audio",
-        'preprocessed_unfiltered_griffinlim.wav'
-      ),
+      os.path.join(constants.PP_DATA_DIR,
+                   "audio",
+                   'preprocessed_unfiltered_griffinlim.wav'),
       data_proc_griffinlim_td,
       fs,
       norm=True
@@ -607,16 +477,10 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
 
   # Denoising
 
-  # denoised_signal = data_mod
-  denoised_signal = pra.denoise.apply_subspace(
-    data_mod,
-    frame_len=64,
-    mu=2,
-    lookback=20,
-    skip=1,
-    thresh=0.85,
-    data_type='float64'
-  )
+  denoised_signal = data_mod
+  # denoised_signal = pra.denoise.apply_subspace(data_mod, frame_len=64, mu=2, lookback=20, skip=1, thresh=0.85, data_type='float64')
+
+  # denoised_signal = pra.denoise.apply_iterative_wiener(data_mod, frame_len=n_fft, lpc_order=12, iterations=2, alpha=0.8, thresh=0.05)
 
   if plot:
     plt.figure(get_fig_nums() + 1)
@@ -626,16 +490,7 @@ def process_sentence(data, fs, n_fft=512, center=True, plot=False):
   # Normalize
   denoised_signal = librosa.util.normalize(denoised_signal)
   if plot:
-    librosa.output.write_wav(
-      os.path.join(
-        constants.PP_DATA_DIR,
-        "audio",
-        'preprocessed_filtered.wav'
-      ),
-      denoised_signal,
-      fs,
-      norm=True
-    )
+    librosa.output.write_wav(os.path.join(constants.PP_DATA_DIR, "audio", 'preprocessed_filtered.wav'), denoised_signal, fs, norm=True)
 
   return denoised_signal, audiogram
 
@@ -654,19 +509,12 @@ def download_corpus(download_flag=True, speaker=[]):
   # Download the corpus, be patient
   corpus = None
   if os.path.exists(ARCTIC_DIR):
-    if os.path.isfile(
-      os.path.join(ARCTIC_DIR,
-                   'cmu_us_aew_arctic/wav/arctic_a0001.wav')
-    ):
+    if os.path.isfile(os.path.join(ARCTIC_DIR, 'cmu_us_aew_arctic/wav/arctic_a0001.wav')):
       download_flag = False
     if len(speaker) < 1:
       corpus = CMUArcticCorpus(basedir=ARCTIC_DIR, download=download_flag)
     else:
-      corpus = CMUArcticCorpus(
-        basedir=ARCTIC_DIR,
-        download=download_flag,
-        speaker=speaker
-      )
+      corpus = CMUArcticCorpus(basedir=ARCTIC_DIR, download=download_flag, speaker=speaker)
   else:
     create_arctic_directory()
     corpus = CMUArcticCorpus(basedir=ARCTIC_DIR, download=download_flag)
@@ -706,18 +554,8 @@ def gen_processed_and_save_wav(corpus, play=False):
     proc_data_shifted = proc_data  # .astype(np.float64)
 
     print("Writing exp: {} to {}".format(sentence_idx, exp_dir))
-    librosa.output.write_wav(
-      orig_path + '.wav',
-      orig_data_shifted,
-      corpus[sentence_idx].fs,
-      norm=True
-    )
-    librosa.output.write_wav(
-      proc_path + '.wav',
-      proc_data_shifted,
-      corpus[sentence_idx].fs,
-      norm=True
-    )
+    librosa.output.write_wav(orig_path + '.wav', orig_data_shifted, corpus[sentence_idx].fs, norm=True)
+    librosa.output.write_wav(proc_path + '.wav', proc_data_shifted, corpus[sentence_idx].fs, norm=True)
 
     # from pydub import AudioSegment
     # print("Converting to mp3")
@@ -734,6 +572,8 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
   # n_fft = 512 to provide 25ms-35ms samples
   # (https://towardsdatascience.com/how-to-apply-machine-learning-and-deep-learning-methods-to-audio-analysis-615e286fcbbc)
 
+  start = datetime.datetime.now()
+
   # Get the timeseries and sampling frequency
   data = deepcopy(corpus[sentence_idx].data).astype(np.float64)
   data_raw = deepcopy(data)
@@ -744,14 +584,7 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
     plt.title('input signal')
     plt.plot(data_raw)
 
-  librosa.output.write_wav(
-    os.path.join(constants.PP_DATA_DIR,
-                 "audio",
-                 'raw.wav'),
-    data,
-    fs,
-    norm=True
-  )
+  librosa.output.write_wav(os.path.join(constants.PP_DATA_DIR, "audio", 'raw.wav'), data, fs, norm=True)
 
   # Get the frequency distribution
   freq = fft_frequencies(sr=fs, n_fft=n_fft)
@@ -763,7 +596,8 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
   # source = obtain_fft_in_db(corpus[sentence_idx].data, n_fft)
   # modulated = obtain_fft_in_db(data_mod, n_fft)
   # plot_audiogram((freq, source), audiogram, (freq, modulated))
-
+  dt = datetime.datetime.now() - start
+  print("Time taken: {}".format(dt.total_seconds() * 1000))
   if play:
     corpus[sentence_idx].data = data_mod
     corpus[sentence_idx].play()
@@ -776,7 +610,7 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
 
 if __name__ == '__main__':
 
-  corpus = download_corpus()
+  corpus = download_corpus(speaker=['clb'])
 
   test(corpus, sentence_idx=2, play=True)
   # gen_processed_and_save_wav(corpus, False)
