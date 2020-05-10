@@ -40,6 +40,7 @@ HOP_LENGTH = NFFT // 4
 FS = 16000
 BATCH_SIZE = 4
 EPOCHS = 100
+STACKED_FRAMES = 8
 max_val = 1
 
 CHUNK = 200
@@ -48,49 +49,6 @@ CHUNK = 200
 METRICS = ['mse', 'accuracy', tf.keras.metrics.RootMeanSquaredError()]
 LOSS = 'mse'
 OPTIMIZER = 'adam'
-
-
-class Conv1DTranspose(tf.keras.layers.Layer):
-
-  def __init__(self, filters, kernel_size, strides=1, padding='valid', name=None):
-    super().__init__()
-    self.conv2dtranspose = tf.keras.layers.Conv2DTranspose(filters, (kernel_size, 1), (strides, 1), padding, name=name)
-
-  def call(self, x):
-    x = tf.expand_dims(x, axis=2)
-    x = self.conv2dtranspose(x)
-    x = tf.squeeze(x, axis=2)
-    return x
-
-
-class BahdanauAttention(tf.keras.layers.Layer):
-
-  def __init__(self, units):
-    super(BahdanauAttention, self).__init__()
-    self.W1 = tf.keras.layers.Dense(units)
-    self.W2 = tf.keras.layers.Dense(units)
-    self.V = tf.keras.layers.Dense(1)
-
-  def call(self, query, values):
-    # query hidden state shape == (batch_size, hidden size)
-    # query_with_time_axis shape == (batch_size, 1, hidden size)
-    # values shape == (batch_size, max_len, hidden size)
-    # we are doing this to broadcast addition along the time axis to calculate the score
-    query_with_time_axis = tf.expand_dims(query, 1)
-
-    # score shape == (batch_size, max_length, 1)
-    # we get 1 at the last axis because we are applying score to self.V
-    # the shape of the tensor before applying self.V is (batch_size, max_length, units)
-    score = self.V(tf.nn.tanh(self.W1(query_with_time_axis) + self.W2(values)))
-
-    # attention_weights shape == (batch_size, max_length, 1)
-    attention_weights = tf.nn.softmax(score, axis=1)
-
-    # context_vector shape after sum == (batch_size, hidden_size)
-    context_vector = attention_weights * values
-    context_vector = tf.reduce_sum(context_vector, axis=1)
-
-    return context_vector, attention_weights
 
 
 def pad(data, length):
@@ -102,10 +60,12 @@ def normalize_sample(X):
 
   if X.shape[1] != NFFT//2 + 1:
     for i, x in enumerate(X):
-      X_norm = normalize(x, axis=1, norm='max')
+      # axis = 0 is along column. For Conv I'm not transposing the array -> Each row is a frequence, each column is time
+      # Makes sense to normalize of every time frame and not every frequency bin.
+      X_norm = librosa.util.normalize(x, axis=0)
       X[i] = X_norm
   else:
-    X = normalize(X, axis=1, norm='max')
+    X = librosa.util.normalize(X, axis=0)
 
   return X
 
@@ -239,6 +199,27 @@ def model_load(model_name='speech2speech'):
   return model
 
 
+def get_stacked_frames(data_stft):
+  data_stft_T = []
+  for sentence in data_stft:
+    # sT = sentence.T
+    # stacked = []
+    # for idx, tm in enumerate(sT):
+    #   stacked.append()
+    data_stft_T.append(sentence.T)
+  data_stft_T = np.array(data_stft_T)
+  # if data_stft_T.shape[0] % STACKED_FRAMES != 0:
+  #   zero_padding = np.zeros((STACKED_FRAMES - (data_stft_T.shape[0] % STACKED_FRAMES), data_stft_T.shape[1]), dtype=data_stft_T.dtype)
+  #   data_stft_T = np.concatenate((data_stft_T, zero_padding), axis=0)
+
+  # data_stacked_frames = []
+  # i = 0
+  # for i in range(data_stft_T.shape[0]):  # // STACKED_FRAMES):
+  #   data_stacked_frames.append(data_stft_T[STACKED_FRAMES * i:STACKED_FRAMES * (i+1)].T)
+  # data_stacked_frames = np.array(data_stacked_frames)
+  return data_stft_T
+
+
 def save_distributed_files(truth_type=None, corpus=None):
   """ 
   Save input and processed files for tests
@@ -275,15 +256,20 @@ def save_distributed_files(truth_type=None, corpus=None):
     y_raw = []
 
   memory_counter = 0
-
+  pad_length = 0
   total_time = 0
   # Get each sentence from corpus and add random noise/echos/both to the input
   # and preprocess the output. Also pad the signals to the max_val
   for i in range(corpus_len):
     start = datetime.datetime.now()
+
+    pad_length = max_val + NFFT//2
+    if pad_length % STACKED_FRAMES != 0:
+      pad_length += (STACKED_FRAMES - (pad_length%STACKED_FRAMES))
+
     # Original data in time domain
     data_orig_td = corpus[i].data.astype(np.float64)
-    yi = pad(deepcopy(data_orig_td), max_val + NFFT//2)
+    yi = pad(deepcopy(data_orig_td), pad_length)
     # Sampling frequency
     fs = corpus[i].fs
 
@@ -292,23 +278,25 @@ def save_distributed_files(truth_type=None, corpus=None):
     noisesample = an.add_noise(data_orig_td, sf.read(os.path.join(NOISE_DIR, "RainNoise.flac")))
     bothsample = ae.add_echoes(noisesample)
 
-    echosample = pad(echosample, max_val + NFFT//2)
-    noisesample = pad(noisesample, max_val + NFFT//2)
-    bothsample = pad(bothsample, max_val + NFFT//2)
+    echosample = pad(echosample, pad_length)
+    noisesample = pad(noisesample, pad_length)
+    bothsample = pad(bothsample, pad_length)
 
     # Equalize data for high frequency hearing loss
     data_eq = None
     if is_eq or is_both:
       data_eq, _ = process_sentence(yi, fs=fs)
       yi_stft_eq = librosa.core.stft(data_eq, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
-      y_eq.append(np.abs(yi_stft_eq.T))
+      yi_stft_eq = librosa.util.normalize(yi_stft_eq, axis=0)
+      y_eq.append(np.abs(yi_stft_eq).T)
 
     # Use non processed input and pad as well
     data_raw = None
     if is_raw or is_both:
       data_raw = deepcopy(yi)
       yi_stft_raw = librosa.core.stft(data_raw, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
-      y_raw.append(np.abs(yi_stft_raw.T))
+      yi_stft_raw = librosa.util.normalize(yi_stft_raw, axis=0)
+      y_raw.append(np.abs(yi_stft_raw).T)
 
     #randomise which sample is input
     rand = random.randint(0, 2)
@@ -321,23 +309,30 @@ def save_distributed_files(truth_type=None, corpus=None):
       random_sample_stft = librosa.core.stft(bothsample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
 
     max_stft_len = random_sample_stft.shape[1]
-    X.append(np.abs(random_sample_stft.T))
+    random_sample_stft = librosa.util.normalize(random_sample_stft, axis=0)
+    X.append(np.abs(random_sample_stft).T)
 
     # print("Padded {}".format(i))
     dt = datetime.datetime.now() - start
     total_time += dt.total_seconds() * 1000
     avg_time = total_time / (i+1)
     if (i % CHUNK == CHUNK - 1):
-      print("Average Time taken for {}: {}ms".format(i, avg_time))
+      print("Time taken for {}: {}ms".format(i, (i+1) * avg_time))
       print("Saving temp npy file to CHUNK {}".format(memory_counter))
       # Convert to np arrays
+      size = 0
       if is_eq or is_both:
         y_eq_temp = np.array(y_eq)
+        size += sys.getsizeof(y_eq_temp)
 
       if is_raw or is_both:
         y_raw_temp = np.array(y_raw)
+        size += sys.getsizeof(y_raw_temp)
 
       X_temp = np.array(X)
+      size += sys.getsizeof(X_temp)
+
+      print("Memory used: {}".format(size / (1024*1024)))
 
       # Save files
       np.save(os.path.join(PP_DATA_DIR, "model", "inputs_{}.npy".format(memory_counter)), X_temp, allow_pickle=True)
@@ -487,9 +482,10 @@ def generate_dataset(truth_type, delete_flag=False, speaker=[]):
     print("Creating preprocessed/model")
     create_preprocessed_dataset_directories()
   memory_counter, max_stft_len, truth_type, corpus_len = save_distributed_files(truth_type, corpus)
-  X, y, _ = concatenate_files(truth_type, delete_flag)
+  X, y_raw, y_eq = concatenate_files(truth_type, delete_flag)
+  print("Completed generating dataset")
 
-  return X, y, _
+  return X, y_raw, y_eq
 
 
 def load_dataset(truth_type='raw'):
@@ -511,14 +507,31 @@ def load_dataset(truth_type='raw'):
   y_train = None
   y_val = None
 
+  Inputs = None
+  Targets_eq = None
+  Targets_raw = None
+  y_raw = None
+  y_eq = None
+
   if not os.path.isfile(os.path.join(PP_DATA_DIR, 'model', 'speech.npz')):
-    X, y, _ = generate_dataset(truth_type, delete_flag=True, speaker=['clb'])
+    Inputs, Targets_raw, Targets_eq = generate_dataset(truth_type, delete_flag=True, speaker=['clb'])
   else:
     SPEECH = np.load(os.path.join(PP_DATA_DIR, 'model', 'speech.npz'))
-    X = SPEECH['inputs']
-    if truth_type is None:
-      truth_type = 'raw'
-    y = SPEECH['truths_{}'.format(truth_type)]
+    Inputs = SPEECH['inputs']
+    if SPEECH['truths_raw'] is not None:
+      Targets_raw = SPEECH['truths_{}'.format('raw')]
+    if SPEECH['truths_eq'] is not None:
+      Targets_eq = SPEECH['truths_{}'.format('eq')]
+
+  X = get_stacked_frames(Inputs)
+  if Targets_raw is not None:
+    y_raw = get_stacked_frames(Targets_raw)
+  if Targets_eq is not None:
+    y_eq = get_stacked_frames(Targets_eq)
+
+  if truth_type is None:
+    # Lets start with raw
+    y = y_raw
 
   # Generate training and testing set
   X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
