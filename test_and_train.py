@@ -35,7 +35,8 @@ from preprocessing import process_sentence, download_corpus
 root_path = 'data/'
 
 # Global vars to change here
-NFFT = 512
+NFFT = 256
+HOP_LENGTH = NFFT // 4
 FS = 16000
 BATCH_SIZE = 4
 EPOCHS = 100
@@ -44,7 +45,7 @@ max_val = 1
 CHUNK = 200
 
 # Model Parameters
-METRICS = ['mse', tf.keras.metrics.RootMeanSquaredError()]
+METRICS = ['mse', 'accuracy', tf.keras.metrics.RootMeanSquaredError()]
 LOSS = 'mse'
 OPTIMIZER = 'adam'
 
@@ -119,10 +120,10 @@ def get_encoder_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   # Conv2D with 32 kernels and ReLu, 3x3in time
   input_layer = tf.keras.layers.Input(shape=input_shape, name='encoder_input')
   il_expand_dims = tf.reshape(tf.expand_dims(input_layer, axis=1), [-1, 1, input_layer.shape[1], input_layer.shape[2]])
-  enc_C1D_1 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=False, name='Enc_Conv_1'))(il_expand_dims)
+  enc_C1D_1 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=True, name='Enc_Conv_1'))(il_expand_dims)
   enc_BN_1 = TimeDistributed(BatchNormalization(name='Enc_Batch_Norm_1'))(enc_C1D_1)
   enc_Act_1 = TimeDistributed(Activation("relu", name='Enc_ReLU_1'))(enc_BN_1)
-  enc_C1D_2 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=False, name='Enc_Conv_2'))(enc_Act_1)
+  enc_C1D_2 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=True, name='Enc_Conv_2'))(enc_Act_1)
   enc_BN_2 = TimeDistributed(BatchNormalization(name='Enc_Batch_Norm_2'))(enc_C1D_2)
   enc_Act_2 = TimeDistributed(Activation("relu", name='Enc_ReLU_2'))(enc_BN_2)
 
@@ -152,9 +153,11 @@ def get_encoder_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
       filters=DeC1D_filters * 2,
       kernel_size=(1,
                    3),
-      strides=(1,
+      strides=(2,
                2),
       data_format='channels_last',
+      output_padding=(1,
+                      1),
       name='DeConv1D_{}'.format(i + 1)
     )(Act)
     # DeC1D = TimeDistributed()
@@ -162,13 +165,19 @@ def get_encoder_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
     Act = TimeDistributed(Activation("relu", name='DeConv_ReLU_{}'.format(i + 1)))(BN)
     DeC1D_filters *= 2
 
-  int_DeConv_out = tf.squeeze(Act, axis=[1])
+  DeConvReshape = Conv2D(filters=1, kernel_size=(1, 1), data_format='channels_first', name='DC1D_Reshape')(Act)
+  int_DeConv_out = tf.squeeze(DeConvReshape, axis=[1])
   # Linear Projection into NFFT/2 and batchnorm and ReLU
   deConv_Dense_1 = Dense(NFFT//2 + 1, name='DeConv_Linear_Projection')(int_DeConv_out)
   deConv_BN_3 = BatchNormalization(name='DeConv_Batch_Norm_{}'.format(i + 1))(deConv_Dense_1)
   # deConv_Act_3 = Activation("tanh", name='DeConv_Tanh')(deConv_BN_3)
+  output_layer = deConv_BN_3
+  # if input_layer.shape[1] > output_layer.shape[1]:
+  #   shape = [input_layer.shape[1] - output_layer.shape[1], output_layer.shape[2]]
+  #   zero_padding = tf.zeros(shape, dtype=output_layer.dtype)
+  #   output_layer = tf.reshape(tf.concat([output_layer, zero_padding], 1), input_layer.shape)
 
-  ConvDeConvModel = tf.keras.Model(inputs=input_layer, outputs=[deConv_BN_3], name='ConvDeConv')
+  ConvDeConvModel = tf.keras.Model(inputs=input_layer, outputs=[output_layer], name='ConvDeConv')
   ConvDeConvModel.summary()
 
   return ConvDeConvModel
@@ -284,25 +293,25 @@ def save_distributed_files(truth_type=None, corpus=None):
     data_eq = None
     if is_eq or is_both:
       data_eq, _ = process_sentence(yi, fs=fs)
-      yi_stft_eq = librosa.core.stft(data_eq, n_fft=NFFT)
+      yi_stft_eq = librosa.core.stft(data_eq, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
       y_eq.append(np.abs(yi_stft_eq.T))
 
     # Use non processed input and pad as well
     data_raw = None
     if is_raw or is_both:
       data_raw = deepcopy(yi)
-      yi_stft_raw = librosa.core.stft(data_raw, n_fft=NFFT)
+      yi_stft_raw = librosa.core.stft(data_raw, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
       y_raw.append(np.abs(yi_stft_raw.T))
 
     #randomise which sample is input
     rand = random.randint(0, 2)
     random_sample_stft = None
     if rand == 0:
-      random_sample_stft = librosa.core.stft(echosample, n_fft=NFFT, center=True)
+      random_sample_stft = librosa.core.stft(echosample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
     elif rand == 1:
-      random_sample_stft = librosa.core.stft(noisesample, n_fft=NFFT, center=True)
+      random_sample_stft = librosa.core.stft(noisesample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
     else:
-      random_sample_stft = librosa.core.stft(bothsample, n_fft=NFFT, center=True)
+      random_sample_stft = librosa.core.stft(bothsample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
 
     max_stft_len = random_sample_stft.shape[1]
     X.append(np.abs(random_sample_stft.T))
@@ -585,7 +594,7 @@ def test_and_train(model_name='speech2speech', retrain=True):
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
     early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='loss', min_delta=0.0001, patience=100, verbose=1, mode='auto')
     model_checkpoint_callback = ModelCheckpoint(
-      monitor='val_loss',
+      monitor='loss',
       filepath=os.path.join(MODEL_DIR,
                             model_name,
                             'model.h5'),
