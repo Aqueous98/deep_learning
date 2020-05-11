@@ -755,7 +755,7 @@ def load_dataset(truth_type='raw'):
     Inputs, Targets_raw, Targets_eq = generate_dataset(truth_type, delete_flag=True, speaker=['clb'])
   else:
     SPEECH = np.load(os.path.join(PP_DATA_DIR, 'model', 'speech.npz'))
-    Inputs = SPEECH['inputs'].astype(np.float32)[:500]
+    Inputs = SPEECH['inputs'].astype(np.float32)
     try:
       if SPEECH['truths_raw'] is not None:
         Targets_raw = SPEECH['truths_{}'.format('raw')].astype(np.float32)
