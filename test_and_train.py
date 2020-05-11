@@ -38,8 +38,8 @@ root_path = 'data/'
 NFFT = 256
 HOP_LENGTH = NFFT // 4
 FS = 16000
-BATCH_SIZE = 4
-EPOCHS = 100
+BATCH_SIZE = 8
+EPOCHS = 500
 STACKED_FRAMES = 8
 max_val = 1
 
@@ -77,10 +77,10 @@ def normalize_sample(X):
     for i, x in enumerate(X):
       # axis = 0 is along column. For Conv I'm not transposing the array -> Each row is a frequence, each column is time
       # Makes sense to normalize of every time frame and not every frequency bin.
-      X_norm = librosa.util.normalize(x, axis=0)
+      X_norm = librosa.util.normalize(x, axis=1)
       X[i] = X_norm
   else:
-    X = librosa.util.normalize(X, axis=0)
+    X = librosa.util.normalize(X, axis=1)
 
   return X
 
@@ -96,7 +96,7 @@ def SDR(denoised, cleaned, eps=1e-7):  # Signal to Distortion Ratio
   return np.mean(10 * np.log10(a_b + eps))
 
 
-def get_encoder_model(input_shape=(NFFT//2 + 1, STACKED_FRAMES, 1), l2_strength=0.0):
+def get_conv_encoder_model(input_shape=(NFFT//2 + 1, STACKED_FRAMES, 1), l2_strength=0.0):
   """
     Get the Encoder Model
 
@@ -320,18 +320,78 @@ def get_encoder_model(input_shape=(NFFT//2 + 1, STACKED_FRAMES, 1), l2_strength=
   return Encoder
 
 
-def get_decoder_model(input_shape=(BATCH_SIZE, 209, 256), frames=None):
+def get_encoder_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   """
-    Define the model architecture
-
+    Get the Encoder Model
     @param input_shape [BATCH_SIZE, no. of frames, no. of freq bins, 1 channel]
   """
-  # Define the output shape
-  output_shape = (BATCH_SIZE, frames, NFFT//2 + 1)
 
-  input_layer = Input(shape=input_shape, name='decoder_input')
+  # Conv2D with 32 kernels and ReLu, 3x3in time
+  input_layer = tf.keras.layers.Input(shape=input_shape, name='encoder_input')
+  il_expand_dims = tf.expand_dims(input_layer, axis=1)
+  enc_C1D_1 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=True, name='Enc_Conv_1'))(il_expand_dims)
+  enc_BN_1 = TimeDistributed(BatchNormalization(name='Enc_Batch_Norm_1'))(enc_C1D_1)
+  enc_Act_1 = TimeDistributed(Activation("relu", name='Enc_ReLU_1'))(enc_BN_1)
+  enc_C1D_2 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=True, name='Enc_Conv_2'))(enc_Act_1)
+  enc_BN_2 = TimeDistributed(BatchNormalization(name='Enc_Batch_Norm_2'))(enc_C1D_2)
+  enc_Act_2 = TimeDistributed(Activation("relu", name='Enc_ReLU_2'))(enc_BN_2)
 
-  return
+  # ConvLSTM1D -> Try and make this Bidirectional
+  # int_input_layer = tf.reshape(tf.expand_dims(enc_Act_2, axis=1), [-1, enc_Act_2.shape[1], enc_Act_2.shape[2], 1], name='Enc_Expand_Dims')
+  ConvLSTM1D = Conv2D(1, (1, 3), use_bias=False, name='Enc_ConvLSTM1D', data_format='channels_first')(enc_Act_2)
+  print(ConvLSTM1D.shape)
+  int_C1DLSTM_out = tf.squeeze(ConvLSTM1D, axis=[1])
+
+  # 3 Stacked Bidirectional LSTMs
+  enc_BiLSTM_1 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_1')(int_C1DLSTM_out)
+  # enc_BiLSTM_2 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_2')(enc_BiLSTM_1)
+  # enc_BiLSTM_3 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_3')(enc_BiLSTM_2)
+
+  # Linear Projection into NFFT/2 and batchnorm and ReLU
+  enc_Dense_1 = Dense(NFFT // 8, name='Enc_Linear_Projection')(enc_BiLSTM_1)
+  enc_BN_3 = BatchNormalization(name='Enc_Batch_Norm_3')(enc_Dense_1)
+  enc_Act_3 = Activation("relu", name='Enc_ReLU_3')(enc_BN_3)
+
+  encoder = tf.keras.Model(inputs=input_layer, outputs=[enc_Act_3], name='Encoder')
+
+  # Begin DeConvolution
+  deConv_input_expand_dims = tf.reshape(tf.expand_dims(enc_Act_3, axis=1), [-1, 1, enc_Act_3.shape[1], enc_Act_3.shape[2]])
+  DeC1D_filters = enc_Act_3.shape[2]
+  Act = deConv_input_expand_dims
+  for i in range(2):
+    DeC1D = Conv2DTranspose(
+      filters=DeC1D_filters * 2,
+      kernel_size=(1,
+                   3),
+      strides=(1,
+               2),
+      data_format='channels_last',
+      output_padding=(0,
+                      1),
+      padding='valid',
+      name='DeConv1D_{}'.format(i + 1)
+    )(Act)
+    # DeC1D = TimeDistributed()
+    BN = TimeDistributed(BatchNormalization(name='DeConv_Batch_norm_{}'.format(i + 1)))(DeC1D)
+    Act = TimeDistributed(Activation("relu", name='DeConv_ReLU_{}'.format(i + 1)))(BN)
+    DeC1D_filters *= 2
+
+  # DeConvReshape = Conv2D(filters=1, kernel_size=(1, 1), data_format='channels_first', name='DC1D_Reshape')(Act)
+  int_DeConv_out = tf.squeeze(Act, axis=[1])
+  # Linear Projection into NFFT/2 and batchnorm and ReLU
+  deConv_Dense_1 = Dense(NFFT//2 + 1, name='DeConv_Linear_Projection')(int_DeConv_out)
+  deConv_BN_3 = BatchNormalization(name='DeConv_Batch_Norm_{}'.format(i + 1))(deConv_Dense_1)
+  # deConv_Act_3 = Activation("tanh", name='DeConv_Tanh')(deConv_BN_3)
+  output_layer = deConv_BN_3
+  # if input_layer.shape[1] > output_layer.shape[1]:
+  #   shape = [input_layer.shape[1] - output_layer.shape[1], output_layer.shape[2]]
+  #   zero_padding = tf.zeros(shape, dtype=output_layer.dtype)
+  #   output_layer = tf.reshape(tf.concat([output_layer, zero_padding], 1), input_layer.shape)
+
+  ConvDeConvModel = tf.keras.Model(inputs=input_layer, outputs=[output_layer], name='ConvDeConv')
+  ConvDeConvModel.summary()
+
+  return ConvDeConvModel
 
 
 def gen_model(input_shape=(NFFT//2 + 1, STACKED_FRAMES, 1)):
@@ -340,6 +400,7 @@ def gen_model(input_shape=(NFFT//2 + 1, STACKED_FRAMES, 1)):
 
     @param input_shape [BATCH_SIZE, no. of frames, no. of freq bins, 1 channel]
   """
+  # Encoder = get_conv_encoder_model(input_shape)
   Encoder = get_encoder_model(input_shape)
 
   # model = Concatenate()([Encoder])
@@ -697,20 +758,21 @@ def load_dataset(truth_type='raw'):
     Inputs = SPEECH['inputs'].astype(np.float32)[:500]
     try:
       if SPEECH['truths_raw'] is not None:
-        Targets_raw = SPEECH['truths_{}'.format('raw')].astype(np.float32)[:500]
+        Targets_raw = SPEECH['truths_{}'.format('raw')].astype(np.float32)
     except Exception as ex:
       print(ex)
       Targets_raw
 
     try:
       if SPEECH['truths_eq'] is not None:
-        Targets_eq = SPEECH['truths_{}'.format('eq')].astype(np.float32)[:500]
+        Targets_eq = SPEECH['truths_{}'.format('eq')].astype(np.float32)
     except Exception as ex:
       print(ex)
       Targets_eq = None
 
   # X = np.expand_dims(get_padded_stft(Inputs), axis=[3])
-  X = get_padded_stft(Inputs)
+  # X = get_padded_stft(Inputs)
+  X = Inputs
   if Targets_raw is not None:
     y_raw = Targets_raw
   if Targets_eq is not None:
@@ -803,27 +865,32 @@ def test_and_train(model_name='speech2speech', retrain=True):
   X_val_norm = normalize_sample(X_val)
   X_test_norm = normalize_sample(X_test)
 
-  y_train_norm = np.expand_dims(normalize_sample(y_train), axis=3)
-  y_val_norm = np.expand_dims(normalize_sample(y_val), axis=3)
-  y_test_norm = np.expand_dims(normalize_sample(y_test), axis=3)
+  y_train_norm = normalize_sample(y_train)
+  y_val_norm = normalize_sample(y_val)
+  y_test_norm = normalize_sample(y_test)
 
   print("X shape:", X_train_norm.shape, "y shape:", y_train_norm.shape)
 
-  Xtn_strided = stride_over(X_train_norm)
-  Xvn_strided = stride_over(X_val_norm)
-  Xten_strided = stride_over(X_test_norm)
+  # Xtn_strided = stride_over(X_train_norm)
+  # Xvn_strided = stride_over(X_val_norm)
+  # Xten_strided = stride_over(X_test_norm)
 
-  Xtn_reshape = Xtn_strided
-  Xvn_reshape = Xvn_strided
-  Xten_reshape = Xten_strided
+  # Xtn_reshape = Xtn_strided
+  # Xvn_reshape = Xvn_strided
+  # Xten_reshape = Xten_strided
 
-  ytn_reshape = y_train_norm.reshape(-1, NFFT//2 + 1, 1, 1)
-  yvn_reshape = y_val_norm.reshape(-1, NFFT//2 + 1, 1, 1)
-  yten_reshape = y_test_norm.reshape(-1, NFFT//2 + 1, 1, 1)
+  # ytn_reshape = y_train_norm.reshape(-1, NFFT//2 + 1, 1, 1)
+  # yvn_reshape = y_val_norm.reshape(-1, NFFT//2 + 1, 1, 1)
+  # yten_reshape = y_test_norm.reshape(-1, NFFT//2 + 1, 1, 1)
 
-  train_dataset = tf.data.Dataset.from_tensor_slices((Xtn_reshape,
-                                                      ytn_reshape)).batch(X_train_norm.shape[1]).shuffle(X_train.shape[0]).repeat()
-  val_dataset = tf.data.Dataset.from_tensor_slices((Xvn_reshape, yvn_reshape)).batch(X_val_norm.shape[1]).repeat(1)
+  # train_dataset = tf.data.Dataset.from_tensor_slices((Xtn_reshape,
+  #                                                     ytn_reshape)).batch(X_train_norm.shape[1]).shuffle(X_train.shape[0]).repeat()
+  # val_dataset = tf.data.Dataset.from_tensor_slices((Xvn_reshape, yvn_reshape)).batch(X_val_norm.shape[1]).repeat(1)
+
+  # train_dataset = tf.data.Dataset.from_tensor_slices((X_train_norm, y_train_norm)).batch(BATCH_SIZE).shuffle(BATCH_SIZE).repeat()
+  # val_dataset = tf.data.Dataset.from_tensor_slices((X_val_norm, y_val_norm)).batch(BATCH_SIZE).repeat(1)
+
+  # print(list(train_dataset.as_numpy_iterator())[0])
 
   # Scale the sample X and get the scaler
   # scaler = scale_sample(X)
@@ -832,38 +899,37 @@ def test_and_train(model_name='speech2speech', retrain=True):
   if (os.path.isfile(os.path.join(MODEL_DIR, model_name, 'model.json')) and not retrain):
     model = model_load()
   else:
-
-    create_model_directory(model_name)
+    if not os.path.isdir(os.path.join(MODEL_DIR, model_name)):
+      create_model_directory(model_name)
 
     baseline_val_loss = None
 
     model = None
 
-    model = gen_model(tuple(Xtn_reshape.shape[1:]))
+    # model = gen_model(tuple(Xtn_reshape.shape[1:]))
+    model = gen_model(tuple(X_train_norm.shape[1:]))
     print('Created Model...')
 
     model.compile(loss=LOSS, optimizer=OPTIMIZER, metrics=METRICS)
     print('Metrics for Model...')
-    tf.keras.utils.plot_model(
-      model,
-      show_shapes=True,
-      dpi=96,
-      to_file=root_path + 'models/{}/model.png'.format(model_name),
-    )
+
+    # print(list(train_dataset.as_numpy_iterator())[0])
+
+    tf.keras.utils.plot_model(model, show_shapes=True, dpi=96, to_file=os.path.join(MODEL_DIR, model_name, 'model.png'))
     print(model.metrics_names)
 
-    early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=50, restore_best_weights=True)
+    early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
-    # if (os.path.isfile(root_path + 'models/{}/model.h5'.format(model_name))):
-    #   model.load_weights(root_path + 'models/{}/model.h5'.format(model_name))
-    #   baseline_val_loss = model.evaluate(val_dataset)[0]
-    #   print(baseline_val_loss)
-    #   early_stopping_callback = tf.keras.callbacks.EarlyStopping(
-    #     monitor='val_loss',
-    #     patience=50,
-    #     restore_best_weights=True,
-    #     baseline=baseline_val_loss
-    #   )
+    if (os.path.isfile(root_path + 'models/{}/model.h5'.format(model_name))):
+      model.load_weights(root_path + 'models/{}/model.h5'.format(model_name))
+      baseline_val_loss = model.evaluate(X_val_norm, y_val_norm)[0]
+      print(baseline_val_loss)
+      early_stopping_callback = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=5,
+        restore_best_weights=True,
+        baseline=baseline_val_loss
+      )
 
     log_dir = os.path.join(LOGS_DIR, 'files', datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
@@ -875,44 +941,55 @@ def test_and_train(model_name='speech2speech', retrain=True):
                             model_name,
                             'model.h5'),
       save_best_only=True,
-      save_weights_only=True,
+      save_weights_only=False,
       mode='min'
     )
 
     # fit the keras model on the dataset
     cbs = [early_stopping_callback, tensorboard_callback, model_checkpoint_callback]
 
-    model.fit(train_dataset, epochs=EPOCHS, validation_data=val_dataset, verbose=1, callbacks=cbs, steps_per_epoch=100)
+    model.fit(
+      X_train_norm,
+      y_train_norm,
+      epochs=EPOCHS,
+      validation_data=(X_val_norm,
+                       y_val_norm),
+      verbose=1,
+      callbacks=cbs,
+      batch_size=BATCH_SIZE
+    )
     print('Model Fit...')
 
     model = save_model(model, model_name)
 
   # model = model_load(model_name)
 
-  [loss, mse, accuracy, rmse] = model.evaluate(Xten_reshape, yten_reshape, verbose=0)  # _, mse, accuracy =
+  [loss, mse, accuracy, rmse] = model.evaluate(X_test_norm, y_test_norm, verbose=0)  # _, mse, accuracy =
   print('Testing accuracy: {}, Testing MSE: {}, Testing Loss: {}, Testing RMSE: {}'.format(accuracy * 100, mse, loss, rmse))
 
   # # Randomly pick 1 test
   idx = random.randint(0, len(X_test_norm) - 1)
   print(idx)
   X = X_test_norm[idx]
-  y = y_test_norm[idx].reshape(-1, NFFT//2 + 1)
+  y = y_test_norm[idx]
+  # y = y_test_norm[idx].reshape(-1, NFFT//2 + 1)
   # min_y, max_y = np.min(y_test_norm[idx]), np.max(y_test_norm[idx])
   # min_x, max_x = np.min(y_test_norm[idx]), np.max(y_test_norm[idx])
   # print("MinY: {}\tMaxY{}".format(min_y, max_y))
   # print("MinX: {}\tMaxX{}".format(min_x, max_x))
 
   X = np.expand_dims(X, axis=0)
-  X = stride_over(X)
+  # X = stride_over(X)
 
-  mean = np.mean(X)
-  std = np.std(X)
-  X = (X-mean) / std
+  # mean = np.mean(X)
+  # std = np.std(X)
+  # X = (X-mean) / std
 
   print(X.shape)
 
-  y_pred = model.predict(X)
-  y_pred = y_pred.reshape(-1, NFFT//2 + 1)
+  # y_pred = model.predict(X)
+  y_pred = np.squeeze(model.predict(X), axis=0)
+  # y_pred = y_pred.reshape(-1, NFFT//2 + 1)
 
   print(y.shape)
   print(y_pred.shape)
@@ -944,8 +1021,8 @@ def prepare_input_features(stft_features):
 
 
 if __name__ == '__main__':
-  clear_logs()
+  # clear_logs()
   print("Cleared Tensorboard Logs...")
-  test_and_train(model_name='convolution', retrain=True)
+  test_and_train(model_name='ConvLSTM', retrain=True)
   # print(timeit.timeit(generate_dataset, number=1))
   # generate_dataset(truth_type='raw')
