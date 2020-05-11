@@ -13,8 +13,8 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Dense, Conv1D, Conv2D, LSTM, TimeDistributed, BatchNormalization
-from tensorflow.keras.layers import Activation, ZeroPadding2D, Flatten, Bidirectional, Conv2DTranspose
+from tensorflow.keras.layers import Dense, Conv1D, Conv2D, LSTM, TimeDistributed, BatchNormalization, SpatialDropout2D
+from tensorflow.keras.layers import Activation, ZeroPadding2D, Flatten, Bidirectional, Conv2DTranspose, Input
 from tensorflow.keras.models import model_from_json
 from tensorflow.keras.callbacks import Callback, ModelCheckpoint
 
@@ -22,7 +22,7 @@ import librosa, sounddevice
 
 from constants import ROOT_DIR, DATA_DIR, ARCTIC_DIR, create_arctic_directory
 from constants import create_preprocessed_dataset_directories, PP_DATA_DIR
-from constants import NOISE_DIR, LOGS_DIR, clear_logs, MODEL_DIR
+from constants import NOISE_DIR, LOGS_DIR, clear_logs, MODEL_DIR, create_model_directory
 
 import add_echoes as ae
 import add_noise as an
@@ -51,6 +51,21 @@ LOSS = 'mse'
 OPTIMIZER = 'adam'
 
 
+class BatchIdCallback(tf.keras.callbacks.Callback):
+
+  def on_train_batch_begin(self, batch, logs=None):
+    print('Training: batch {} begins at {}'.format(batch, datetime.datetime.now().time()))
+
+  def on_train_batch_end(self, batch, logs=None):
+    print('Training: batch {} ends at {}'.format(batch, datetime.datetime.now().time()))
+
+  def on_test_batch_begin(self, batch, logs=None):
+    print('Evaluating: batch {} begins at {}'.format(batch, datetime.datetime.now().time()))
+
+  def on_test_batch_end(self, batch, logs=None):
+    print('Evaluating: batch {} ends at {}'.format(batch, datetime.datetime.now().time()))
+
+
 def pad(data, length):
   return librosa.util.fix_length(data, length)
 
@@ -70,7 +85,18 @@ def normalize_sample(X):
   return X
 
 
-def get_encoder_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
+def l2_norm(vector):
+  return np.square(vector)
+
+
+def SDR(denoised, cleaned, eps=1e-7):  # Signal to Distortion Ratio
+  a = l2_norm(denoised)
+  b = l2_norm(denoised - cleaned)
+  a_b = a / b
+  return np.mean(10 * np.log10(a_b + eps))
+
+
+def get_encoder_model(input_shape=(NFFT//2 + 1, STACKED_FRAMES, 1), l2_strength=0.0):
   """
     Get the Encoder Model
 
@@ -78,82 +104,220 @@ def get_encoder_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   """
 
   # Conv2D with 32 kernels and ReLu, 3x3in time
-  input_layer = tf.keras.layers.Input(shape=input_shape, name='encoder_input')
-  il_expand_dims = tf.reshape(tf.expand_dims(input_layer, axis=1), [-1, 1, input_layer.shape[1], input_layer.shape[2]])
-  enc_C1D_1 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=True, name='Enc_Conv_1'))(il_expand_dims)
-  enc_BN_1 = TimeDistributed(BatchNormalization(name='Enc_Batch_Norm_1'))(enc_C1D_1)
-  enc_Act_1 = TimeDistributed(Activation("relu", name='Enc_ReLU_1'))(enc_BN_1)
-  enc_C1D_2 = TimeDistributed(Conv1D(filters=32, kernel_size=3, strides=2, use_bias=True, name='Enc_Conv_2'))(enc_Act_1)
-  enc_BN_2 = TimeDistributed(BatchNormalization(name='Enc_Batch_Norm_2'))(enc_C1D_2)
-  enc_Act_2 = TimeDistributed(Activation("relu", name='Enc_ReLU_2'))(enc_BN_2)
+  inputs = Input(shape=input_shape, name='encoder_input')
+  x = inputs
 
-  # ConvLSTM1D -> Try and make this Bidirectional
-  # int_input_layer = tf.reshape(tf.expand_dims(enc_Act_2, axis=1), [-1, enc_Act_2.shape[1], enc_Act_2.shape[2], 1], name='Enc_Expand_Dims')
-  ConvLSTM1D = Conv2D(1, (1, 3), use_bias=False, name='Enc_ConvLSTM1D', data_format='channels_first')(enc_Act_2)
-  int_C1DLSTM_out = tf.squeeze(ConvLSTM1D, axis=[1])
+  # -----
+  x = ZeroPadding2D(((4, 4), (0, 0)))(x)
+  x = Conv2D(
+    filters=18,
+    kernel_size=[9,
+                 8],
+    strides=[1,
+             1],
+    padding='valid',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
-  # 3 Stacked Bidirectional LSTMs
-  # enc_BiLSTM_1 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_1')(int_C1DLSTM_out)
-  # enc_BiLSTM_2 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_2')(enc_BiLSTM_1)
-  # enc_BiLSTM_3 = Bidirectional(LSTM(NFFT // 4, return_sequences=True), name='Enc_BiLSTM_3')(enc_BiLSTM_2)
+  skip0 = Conv2D(
+    filters=30,
+    kernel_size=[5,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(skip0)
+  x = BatchNormalization()(x)
 
-  # Linear Projection into NFFT/2 and batchnorm and ReLU
-  # enc_Dense_1 = Dense(NFFT // 8, name='Enc_Linear_Projection')(int_C1DLSTM_out)
-  # enc_BN_3 = BatchNormalization(name='Enc_Batch_Norm_3')(enc_Dense_1)
-  # enc_Act_3 = Activation("relu", name='Enc_ReLU_3')(enc_BN_3)
+  x = Conv2D(
+    filters=8,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
-  # encoder = tf.keras.Model(inputs=input_layer, outputs=[enc_Act_3], name='Encoder')
+  # -----
+  x = Conv2D(
+    filters=18,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
-  # Begin DeConvolution
-  deConv_input_expand_dims = tf.reshape(
-    tf.expand_dims(int_C1DLSTM_out,
-                   axis=1),
-    [-1,
-     1,
-     int_C1DLSTM_out.shape[1],
-     int_C1DLSTM_out.shape[2]]
-  )
-  DeC1D_filters = int_C1DLSTM_out.shape[2]
-  Act = deConv_input_expand_dims
-  for i in range(2):
-    DeC1D = Conv2DTranspose(
-      filters=DeC1D_filters * 2,
-      kernel_size=(1,
-                   3),
-      strides=(2,
-               2),
-      data_format='channels_last',
-      output_padding=(1,
-                      1),
-      name='DeConv1D_{}'.format(i + 1)
-    )(Act)
-    # DeC1D = TimeDistributed()
-    BN = TimeDistributed(BatchNormalization(name='DeConv_Batch_norm_{}'.format(i + 1)))(DeC1D)
-    Act = TimeDistributed(Activation("relu", name='DeConv_ReLU_{}'.format(i + 1)))(BN)
-    DeC1D_filters *= 2
+  skip1 = Conv2D(
+    filters=30,
+    kernel_size=[5,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(skip1)
+  x = BatchNormalization()(x)
 
-  DeConvReshape = Conv2D(filters=1, kernel_size=(1, 1), data_format='channels_first', name='DC1D_Reshape')(Act)
-  int_DeConv_out = tf.squeeze(DeConvReshape, axis=[1])
-  # Linear Projection into NFFT/2 and batchnorm and ReLU
-  deConv_Dense_1 = Dense(NFFT//2 + 1, name='DeConv_Linear_Projection')(int_DeConv_out)
-  deConv_BN_3 = BatchNormalization(name='DeConv_Batch_Norm_{}'.format(i + 1))(deConv_Dense_1)
-  # deConv_Act_3 = Activation("tanh", name='DeConv_Tanh')(deConv_BN_3)
-  output_layer = deConv_BN_3
-  # if input_layer.shape[1] > output_layer.shape[1]:
-  #   shape = [input_layer.shape[1] - output_layer.shape[1], output_layer.shape[2]]
-  #   zero_padding = tf.zeros(shape, dtype=output_layer.dtype)
-  #   output_layer = tf.reshape(tf.concat([output_layer, zero_padding], 1), input_layer.shape)
+  x = Conv2D(
+    filters=8,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
-  ConvDeConvModel = tf.keras.Model(inputs=input_layer, outputs=[output_layer], name='ConvDeConv')
-  ConvDeConvModel.summary()
+  # ----
+  x = Conv2D(
+    filters=18,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
-  return ConvDeConvModel
+  x = Conv2D(
+    filters=30,
+    kernel_size=[5,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
+  x = Conv2D(
+    filters=8,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
-def get_attention_mechanism():
+  # ----
+  x = Conv2D(
+    filters=18,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
 
-  attention_layer = BahdanauAttention(10)
-  return
+  x = Conv2D(
+    filters=30,
+    kernel_size=[5,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = x + skip1
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
+
+  x = Conv2D(
+    filters=8,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
+
+  # ----
+  x = Conv2D(
+    filters=18,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
+
+  x = Conv2D(
+    filters=30,
+    kernel_size=[5,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = x + skip0
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
+
+  x = Conv2D(
+    filters=8,
+    kernel_size=[9,
+                 1],
+    strides=[1,
+             1],
+    padding='same',
+    use_bias=False,
+    kernel_regularizer=tf.keras.regularizers.l2(l2_strength)
+  )(x)
+  x = Activation('relu')(x)
+  x = BatchNormalization()(x)
+
+  # ----
+  x = SpatialDropout2D(0.2)(x)
+  x = Conv2D(filters=1, kernel_size=[129, 1], strides=[1, 1], padding='same')(x)
+
+  Encoder = tf.keras.Model(inputs=inputs, outputs=[x], name='Encoder')
+  Encoder.summary()
+
+  return Encoder
 
 
 def get_decoder_model(input_shape=(BATCH_SIZE, 209, 256), frames=None):
@@ -165,12 +329,12 @@ def get_decoder_model(input_shape=(BATCH_SIZE, 209, 256), frames=None):
   # Define the output shape
   output_shape = (BATCH_SIZE, frames, NFFT//2 + 1)
 
-  input_layer = tf.keras.layers.Input(shape=input_shape, name='decoder_input')
+  input_layer = Input(shape=input_shape, name='decoder_input')
 
   return
 
 
-def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
+def gen_model(input_shape=(NFFT//2 + 1, STACKED_FRAMES, 1)):
   """
     Define the model architecture
 
@@ -178,7 +342,7 @@ def gen_model(input_shape=(BATCH_SIZE, max_val, NFFT//2 + 1)):
   """
   Encoder = get_encoder_model(input_shape)
 
-  # model = tf.keras.layers.Concatenate()([Encoder])
+  # model = Concatenate()([Encoder])
 
   return Encoder
 
@@ -199,7 +363,7 @@ def model_load(model_name='speech2speech'):
   return model
 
 
-def get_stacked_frames(data_stft):
+def get_fvt_stft(data_stft):
   data_stft_T = []
   for sentence in data_stft:
     # sT = sentence.T
@@ -218,6 +382,16 @@ def get_stacked_frames(data_stft):
   #   data_stacked_frames.append(data_stft_T[STACKED_FRAMES * i:STACKED_FRAMES * (i+1)].T)
   # data_stacked_frames = np.array(data_stacked_frames)
   return data_stft_T
+
+
+def get_padded_stft(data_stft):
+  padded_stft = []
+  for sentence in data_stft:
+    padding = np.zeros((STACKED_FRAMES, NFFT//2 + 1), dtype=data_stft.dtype)
+    padded_stft.append(np.concatenate((padding, sentence), axis=0))
+
+  padded_stft = np.array(padded_stft)
+  return padded_stft
 
 
 def save_distributed_files(truth_type=None, corpus=None):
@@ -276,11 +450,11 @@ def save_distributed_files(truth_type=None, corpus=None):
     # Pad transformed signals
     echosample = ae.add_echoes(data_orig_td)
     noisesample = an.add_noise(data_orig_td, sf.read(os.path.join(NOISE_DIR, "RainNoise.flac")))
-    bothsample = ae.add_echoes(noisesample)
+    orig_sample = data_orig_td
 
     echosample = pad(echosample, pad_length)
     noisesample = pad(noisesample, pad_length)
-    bothsample = pad(bothsample, pad_length)
+    orig_sample = pad(orig_sample, pad_length)
 
     # Equalize data for high frequency hearing loss
     data_eq = None
@@ -299,14 +473,12 @@ def save_distributed_files(truth_type=None, corpus=None):
       y_raw.append(np.abs(yi_stft_raw).T)
 
     #randomise which sample is input
-    rand = random.randint(0, 2)
+    rand = random.randint(0, 1)
     random_sample_stft = None
     if rand == 0:
-      random_sample_stft = librosa.core.stft(echosample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
-    elif rand == 1:
       random_sample_stft = librosa.core.stft(noisesample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
     else:
-      random_sample_stft = librosa.core.stft(bothsample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
+      random_sample_stft = librosa.core.stft(orig_sample, n_fft=NFFT, hop_length=HOP_LENGTH, center=True)
 
     max_stft_len = random_sample_stft.shape[1]
     random_sample_stft = librosa.util.normalize(random_sample_stft, axis=0)
@@ -485,6 +657,11 @@ def generate_dataset(truth_type, delete_flag=False, speaker=[]):
   X, y_raw, y_eq = concatenate_files(truth_type, delete_flag)
   print("Completed generating dataset")
 
+  if y_eq is None:
+    return X, y_raw, None
+  elif y_raw is None:
+    return X, None, y_eq
+
   return X, y_raw, y_eq
 
 
@@ -517,27 +694,44 @@ def load_dataset(truth_type='raw'):
     Inputs, Targets_raw, Targets_eq = generate_dataset(truth_type, delete_flag=True, speaker=['clb'])
   else:
     SPEECH = np.load(os.path.join(PP_DATA_DIR, 'model', 'speech.npz'))
-    Inputs = SPEECH['inputs']
-    if SPEECH['truths_raw'] is not None:
-      Targets_raw = SPEECH['truths_{}'.format('raw')]
-    if SPEECH['truths_eq'] is not None:
-      Targets_eq = SPEECH['truths_{}'.format('eq')]
+    Inputs = SPEECH['inputs'].astype(np.float32)[:500]
+    try:
+      if SPEECH['truths_raw'] is not None:
+        Targets_raw = SPEECH['truths_{}'.format('raw')].astype(np.float32)[:500]
+    except Exception as ex:
+      print(ex)
+      Targets_raw
 
-  X = get_stacked_frames(Inputs)
+    try:
+      if SPEECH['truths_eq'] is not None:
+        Targets_eq = SPEECH['truths_{}'.format('eq')].astype(np.float32)[:500]
+    except Exception as ex:
+      print(ex)
+      Targets_eq = None
+
+  # X = np.expand_dims(get_padded_stft(Inputs), axis=[3])
+  X = get_padded_stft(Inputs)
   if Targets_raw is not None:
-    y_raw = get_stacked_frames(Targets_raw)
+    y_raw = Targets_raw
   if Targets_eq is not None:
-    y_eq = get_stacked_frames(Targets_eq)
+    y_eq = Targets_eq
+
+  if truth_type == 'raw':
+    y = y_raw
+  elif truth_type == 'eq':
+    y = y_eq
 
   if truth_type is None:
     # Lets start with raw
     y = y_raw
 
+  # Reshape to [sentence, fft//2+1, 1]
+
   # Generate training and testing set
   X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1)
 
   # Generate validation set
-  X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.05)
+  X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.15)
 
   return (X_train, y_train), (X_val, y_val), (X_test, y_test)
 
@@ -571,6 +765,29 @@ def play_sound(x, y_pred, y, fs=NFFT):
   return
 
 
+def stride_over(data):
+  """
+    Stride over the dataset to maintain latency.
+
+    @param data [sentences, samples, bins, 1]
+  """
+  data_out = []
+
+  size = 0
+  for idx, sentence in enumerate(data):
+    data_stacked_frames = []
+    for i in range(sentence.shape[0] - STACKED_FRAMES):
+      data_stacked_frames.append(sentence[i:i + STACKED_FRAMES].T)
+      size += sys.getsizeof(data_stacked_frames)
+    data_out.append(np.array(data_stacked_frames))
+    if idx % 100 == 0:
+      print("Memory used: {}".format(idx * size / (1024*1024*1024)))
+      size = 0
+
+  data_out = np.reshape(np.array(data_out), [-1, NFFT//2 + 1, STACKED_FRAMES, 1])
+  return data_out
+
+
 def test_and_train(model_name='speech2speech', retrain=True):
   """ 
     Test and/or train on given dataset 
@@ -579,113 +796,135 @@ def test_and_train(model_name='speech2speech', retrain=True):
     @param retrain True if retrain, False if load from pretrained model
   """
 
-  (X_train, y_train), (X_val, y_val), (X_test, y_test) = load_dataset(truth_type=None)
-  X = X_train
-  y = y_train
+  (X_train, y_train), (X_val, y_val), (X_test, y_test) = load_dataset(truth_type='eq')
   model = None
+
+  X_train_norm = normalize_sample(X_train)
+  X_val_norm = normalize_sample(X_val)
+  X_test_norm = normalize_sample(X_test)
+
+  y_train_norm = np.expand_dims(normalize_sample(y_train), axis=3)
+  y_val_norm = np.expand_dims(normalize_sample(y_val), axis=3)
+  y_test_norm = np.expand_dims(normalize_sample(y_test), axis=3)
+
+  print("X shape:", X_train_norm.shape, "y shape:", y_train_norm.shape)
+
+  Xtn_strided = stride_over(X_train_norm)
+  Xvn_strided = stride_over(X_val_norm)
+  Xten_strided = stride_over(X_test_norm)
+
+  Xtn_reshape = Xtn_strided
+  Xvn_reshape = Xvn_strided
+  Xten_reshape = Xten_strided
+
+  ytn_reshape = y_train_norm.reshape(-1, NFFT//2 + 1, 1, 1)
+  yvn_reshape = y_val_norm.reshape(-1, NFFT//2 + 1, 1, 1)
+  yten_reshape = y_test_norm.reshape(-1, NFFT//2 + 1, 1, 1)
+
+  train_dataset = tf.data.Dataset.from_tensor_slices((Xtn_reshape,
+                                                      ytn_reshape)).batch(X_train_norm.shape[1]).shuffle(X_train.shape[0]).repeat()
+  val_dataset = tf.data.Dataset.from_tensor_slices((Xvn_reshape, yvn_reshape)).batch(X_val_norm.shape[1]).repeat(1)
 
   # Scale the sample X and get the scaler
   # scaler = scale_sample(X)
 
   # Check if model already exists and retrain is not being called again
-  if (os.path.isfile(root_path + 'models/{}/model.json'.format(model_name)) and not retrain):
+  if (os.path.isfile(os.path.join(MODEL_DIR, model_name, 'model.json')) and not retrain):
     model = model_load()
   else:
-    X = X_train
-    y = y_train
 
-    X_train_norm = normalize_sample(X_train)
-    # X_train_norm = np.expand_dims(X_train_norm_, axis=0).reshape(-1, 1, X_train_norm_.shape[1], X_train_norm_.shape[2])
+    create_model_directory(model_name)
 
-    X_val_norm = normalize_sample(X_val)
-    # X_val_norm = np.expand_dims(X_val_norm_, axis=0).reshape(-1, 1, X_val_norm_.shape[1], X_val_norm_.shape[2])
-
-    y_train_norm = normalize_sample(y_train)
-    y_val_norm = normalize_sample(y_val)
-
-    print("X shape:", X_train_norm.shape, "y shape:", y_train_norm.shape)
+    baseline_val_loss = None
 
     model = None
 
-    model = gen_model(tuple(X_train_norm.shape[1:]))
+    model = gen_model(tuple(Xtn_reshape.shape[1:]))
     print('Created Model...')
 
     model.compile(loss=LOSS, optimizer=OPTIMIZER, metrics=METRICS)
     print('Metrics for Model...')
-
+    tf.keras.utils.plot_model(
+      model,
+      show_shapes=True,
+      dpi=96,
+      to_file=root_path + 'models/{}/model.png'.format(model_name),
+    )
     print(model.metrics_names)
+
+    early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=50, restore_best_weights=True)
+
+    # if (os.path.isfile(root_path + 'models/{}/model.h5'.format(model_name))):
+    #   model.load_weights(root_path + 'models/{}/model.h5'.format(model_name))
+    #   baseline_val_loss = model.evaluate(val_dataset)[0]
+    #   print(baseline_val_loss)
+    #   early_stopping_callback = tf.keras.callbacks.EarlyStopping(
+    #     monitor='val_loss',
+    #     patience=50,
+    #     restore_best_weights=True,
+    #     baseline=baseline_val_loss
+    #   )
 
     log_dir = os.path.join(LOGS_DIR, 'files', datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
-    early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='loss', min_delta=0.0001, patience=100, verbose=1, mode='auto')
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq='batch')
+
     model_checkpoint_callback = ModelCheckpoint(
-      monitor='loss',
+      monitor='val_loss',
       filepath=os.path.join(MODEL_DIR,
                             model_name,
                             'model.h5'),
       save_best_only=True,
-      save_weights_only=False,
+      save_weights_only=True,
       mode='min'
     )
 
     # fit the keras model on the dataset
-    cbs = [
-      # early_stopping_callback,
-      tensorboard_callback,
-      model_checkpoint_callback
-    ]
+    cbs = [early_stopping_callback, tensorboard_callback, model_checkpoint_callback]
 
-    model.fit(
-      X_train_norm,
-      y_train_norm,
-      epochs=EPOCHS,
-      batch_size=BATCH_SIZE,
-      validation_data=(X_val_norm,
-                       y_val_norm),
-      verbose=1,
-      callbacks=cbs
-    )
+    model.fit(train_dataset, epochs=EPOCHS, validation_data=val_dataset, verbose=1, callbacks=cbs, steps_per_epoch=100)
     print('Model Fit...')
 
     model = save_model(model, model_name)
 
-  X_test_norm = normalize_sample(X_test)
-  y_test_norm = normalize_sample(y_test)
+  # model = model_load(model_name)
 
-  X = X_test_norm
-  y = y_test_norm
+  [loss, mse, accuracy, rmse] = model.evaluate(Xten_reshape, yten_reshape, verbose=0)  # _, mse, accuracy =
+  print('Testing accuracy: {}, Testing MSE: {}, Testing Loss: {}, Testing RMSE: {}'.format(accuracy * 100, mse, loss, rmse))
 
-  model = model_load(model_name)
+  # # Randomly pick 1 test
+  idx = random.randint(0, len(X_test_norm) - 1)
+  print(idx)
+  X = X_test_norm[idx]
+  y = y_test_norm[idx].reshape(-1, NFFT//2 + 1)
+  # min_y, max_y = np.min(y_test_norm[idx]), np.max(y_test_norm[idx])
+  # min_x, max_x = np.min(y_test_norm[idx]), np.max(y_test_norm[idx])
+  # print("MinY: {}\tMaxY{}".format(min_y, max_y))
+  # print("MinX: {}\tMaxX{}".format(min_x, max_x))
 
-  print(model.evaluate(X, y, verbose=0))  # _, mse, accuracy =
-  # print('Testing accuracy: {}, Testing MSE: {}'.format(accuracy * 100, mse))
+  X = np.expand_dims(X, axis=0)
+  X = stride_over(X)
 
-  # Randomly pick 1 test
-  idx = random.randint(0, len(X) - 1)
-  min_y, max_y = np.min(y_test[idx]), np.max(y_test[idx])
-  min_x, max_x = np.min(y_test[idx]), np.max(y_test[idx])
-  print("MinY: {}\tMaxY{}".format(min_y, max_y))
-  print("MinX: {}\tMaxX{}".format(min_x, max_x))
+  mean = np.mean(X)
+  std = np.std(X)
+  X = (X-mean) / std
 
-  test = normalize_sample(X_test[idx])
-  target = y_test[idx]
+  print(X.shape)
 
-  # Reshape test to single sentence
-  test_reshaped = np.expand_dims(test, axis=0)
+  y_pred = model.predict(X)
+  y_pred = y_pred.reshape(-1, NFFT//2 + 1)
 
-  # Predict
-  y_pred = np.squeeze(model.predict(test_reshaped), axis=0)
+  print(y.shape)
+  print(y_pred.shape)
 
-  # Rescale
-  output_lowdim = (y_pred.T) * (max_y-min_y)
-  input_lowdim = (test.T) * (max_x-min_x)
-  target_lowdim = (target.T)  # * (max_y-min_y)
+  y = y.T
+  y_pred = y_pred.T
+  X_test_norm = X_test_norm[idx].T
 
   # GriffinLim Vocoder
-  output_sound = librosa.core.griffinlim(output_lowdim)
-  input_sound = librosa.core.griffinlim(input_lowdim)
-  target_sound = librosa.core.griffinlim(target_lowdim)
+  output_sound = librosa.core.griffinlim(y_pred)
+  input_sound = librosa.core.griffinlim(X_test_norm)
+  target_sound = librosa.core.griffinlim(y)
 
   # Play and plot all
   play_sound(input_sound, output_sound, target_sound, FS)
@@ -693,9 +932,20 @@ def test_and_train(model_name='speech2speech', retrain=True):
   return
 
 
+def prepare_input_features(stft_features):
+  # Phase Aware Scaling: To avoid extreme differences (more than
+  # 45 degree) between the noisy and clean phase, the clean spectral magnitude was encoded as similar to [21]:
+  noisySTFT = np.concatenate([stft_features[:, 0:STACKED_FRAMES - 1], stft_features], axis=1)
+  stftSegments = np.zeros((NFFT//2 + 1, STACKED_FRAMES, noisySTFT.shape[1] - STACKED_FRAMES + 1))
+
+  for index in range(noisySTFT.shape[1] - STACKED_FRAMES + 1):
+    stftSegments[:, :, index] = noisySTFT[:, index:index + STACKED_FRAMES]
+  return stftSegments
+
+
 if __name__ == '__main__':
   clear_logs()
   print("Cleared Tensorboard Logs...")
-  test_and_train(model_name='speech2speech', retrain=True)
+  test_and_train(model_name='convolution', retrain=True)
   # print(timeit.timeit(generate_dataset, number=1))
   # generate_dataset(truth_type='raw')

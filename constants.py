@@ -46,6 +46,10 @@ def create_preprocessed_dataset_directories():
     print(ose)
 
 
+def create_model_directory(model_name):
+  os.makedirs(os.path.join(MODEL_DIR, model_name))
+
+
 def clear_logs():
   if os.path.exists(LOGS_DIR):
     rmtree(LOGS_DIR)
