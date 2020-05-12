@@ -578,6 +578,7 @@ def test(corpus, sentence_idx=1, n_fft=512, center=True, play=False):
   data = deepcopy(corpus[sentence_idx].data).astype(np.float64)
   data_raw = deepcopy(data)
   fs = corpus[sentence_idx].fs
+  print(corpus.sentences[sentence_idx])
 
   if play:
     plt.figure(get_fig_nums() + 1)
@@ -612,5 +613,5 @@ if __name__ == '__main__':
 
   corpus = download_corpus(speaker=['clb'])
 
-  test(corpus, sentence_idx=2, play=True)
+  test(corpus, sentence_idx=1, play=True)
   # gen_processed_and_save_wav(corpus, False)

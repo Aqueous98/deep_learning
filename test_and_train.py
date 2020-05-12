@@ -787,6 +787,8 @@ def load_dataset(truth_type='raw'):
     # Lets start with raw
     y = y_raw
 
+  print(X.shape, y.shape)
+
   # Reshape to [sentence, fft//2+1, 1]
 
   # Generate training and testing set
@@ -897,7 +899,7 @@ def test_and_train(model_name='speech2speech', retrain=True):
 
   # Check if model already exists and retrain is not being called again
   if (os.path.isfile(os.path.join(MODEL_DIR, model_name, 'model.json')) and not retrain):
-    model = model_load()
+    model = model_load(model_name)
   else:
     if not os.path.isdir(os.path.join(MODEL_DIR, model_name)):
       create_model_directory(model_name)
@@ -946,7 +948,7 @@ def test_and_train(model_name='speech2speech', retrain=True):
     )
 
     # fit the keras model on the dataset
-    cbs = [early_stopping_callback, tensorboard_callback, model_checkpoint_callback]
+    cbs = [early_stopping_callback, model_checkpoint_callback]  # tensorboard_callback
 
     model.fit(
       X_train_norm,
@@ -968,7 +970,7 @@ def test_and_train(model_name='speech2speech', retrain=True):
   print('Testing accuracy: {}, Testing MSE: {}, Testing Loss: {}, Testing RMSE: {}'.format(accuracy * 100, mse, loss, rmse))
 
   # # Randomly pick 1 test
-  idx = random.randint(0, len(X_test_norm) - 1)
+  idx = 32
   print(idx)
   X = X_test_norm[idx]
   y = y_test_norm[idx]
@@ -1006,6 +1008,13 @@ def test_and_train(model_name='speech2speech', retrain=True):
   # Play and plot all
   play_sound(input_sound, output_sound, target_sound, FS)
 
+  if not os.path.isdir(os.path.join(MODEL_DIR, model_name, 'audio_output')):
+    create_model_directory(os.path.join(model_name, 'audio_output'))
+
+  librosa.output.write_wav(os.path.join(MODEL_DIR, model_name, 'audio_output', 'input.wav'), input_sound, sr=FS, norm=True)
+  librosa.output.write_wav(os.path.join(MODEL_DIR, model_name, 'audio_output', 'target.wav'), target_sound, sr=FS, norm=True)
+  librosa.output.write_wav(os.path.join(MODEL_DIR, model_name, 'audio_output', 'predicted.wav'), output_sound, sr=FS, norm=True)
+
   return
 
 
@@ -1023,6 +1032,6 @@ def prepare_input_features(stft_features):
 if __name__ == '__main__':
   # clear_logs()
   print("Cleared Tensorboard Logs...")
-  test_and_train(model_name='ConvLSTM', retrain=True)
+  test_and_train(model_name='ConvLSTM', retrain=False)
   # print(timeit.timeit(generate_dataset, number=1))
   # generate_dataset(truth_type='raw')
